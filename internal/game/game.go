@@ -100,24 +100,30 @@ type Action struct {
 	Sequence int64  `json:"sequence"`
 }
 type CombatUnit struct {
-	Stars  int    `json:"stars"`
-	ID     string `json:"id"`
-	Team   string `json:"team"`
-	Token  int    `json:"token"`
-	Kind   int    `json:"kind"`
-	Slot   int    `json:"slot"`
-	MaxHP  int    `json:"max_hp"`
-	Attack int    `json:"attack"`
-	Speed  int    `json:"speed"`
+	Stars     int    `json:"stars"`
+	ID        string `json:"id"`
+	Team      string `json:"team"`
+	Token     int    `json:"token"`
+	Kind      int    `json:"kind"`
+	Slot      int    `json:"slot"`
+	MaxHP     int    `json:"max_hp"`
+	Attack    int    `json:"attack"`
+	Speed     int    `json:"speed"`
+	Armor     int    `json:"armor"`
+	InitialHP int    `json:"initial_hp"`
+	Summoned  bool   `json:"summoned"`
 }
 type CombatEvent struct {
-	Index    int    `json:"index"`
-	Attacker string `json:"attacker"`
-	Target   string `json:"target"`
-	Damage   int    `json:"damage"`
-	TargetHP int    `json:"target_hp"`
-	Dead     bool   `json:"dead"`
-	AtMS     int64  `json:"at_ms"`
+	Index     int         `json:"index"`
+	Attacker  string      `json:"attacker"`
+	Target    string      `json:"target"`
+	Damage    int         `json:"damage"`
+	TargetHP  int         `json:"target_hp"`
+	Dead      bool        `json:"dead"`
+	AtMS      int64       `json:"at_ms"`
+	Animation string      `json:"animation,omitempty"`
+	Mode      string      `json:"mode,omitempty"`
+	Hits      []CombatHit `json:"hits,omitempty"`
 }
 type Plan struct {
 	PlayerDamage int           `json:"player_damage"`
@@ -454,6 +460,11 @@ func (r *Room) ShouldStart(now int64) bool {
 	return r.State.Phase == "preparation" && (now >= r.State.DeadlineMS || (r.State.Players[0].Ready && r.State.Players[1].Ready))
 }
 func (r *Room) Start(now int64) *Plan {
+	return r.startEffects(now)
+}
+
+// Legacy workbook imports retain their original independent HP/attack mechanics.
+func (r *Room) startLegacy(now int64) *Plan {
 	plan := &Plan{Round: r.State.Round, StartMS: now + 1500, Units: []CombatUnit{}, Events: []CombatEvent{}}
 	var alive [2][]int
 	hp := map[int]int{}

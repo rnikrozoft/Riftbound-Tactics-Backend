@@ -110,7 +110,7 @@ func TestPlanDeterministicAndValid(t *testing.T) {
 	hp := map[string]int{}
 	team := map[string]string{}
 	for _, u := range a.Units {
-		hp[u.ID] = 100
+		hp[u.ID] = u.MaxHP
 		team[u.ID] = u.Team
 	}
 	previous := "B"
@@ -122,11 +122,12 @@ func TestPlanDeterministicAndValid(t *testing.T) {
 			t.Fatal("not alternating")
 		}
 		previous = team[e.Attacker]
-		hp[e.Target] -= e.Damage
-		if hp[e.Target] < 0 {
-			hp[e.Target] = 0
+		for _, hit := range e.Hits {
+			for _, change := range hit.Changes {
+				hp[change.ID] = change.HP
+			}
 		}
-		if hp[e.Target] != e.TargetHP || e.Dead != (e.TargetHP == 0) || e.Index != i || e.AtMS != a.StartMS+int64(i)*StepMS {
+		if hp[e.Target] != e.TargetHP || e.Dead != (e.TargetHP == 0) || e.Index != i || (i > 0 && e.AtMS <= a.Events[i-1].AtMS) {
 			t.Fatal("invalid plan")
 		}
 	}
@@ -398,6 +399,11 @@ func TestPlayerHealthUsesWinningShopAndSurvivingStars(t *testing.T) {
 		alive[u.ID] = true
 	}
 	for _, e := range plan.Events {
+		for _, hit := range e.Hits {
+			for _, change := range hit.Changes {
+				alive[change.ID] = change.HP > 0
+			}
+		}
 		if e.Dead {
 			alive[e.Target] = false
 		}
@@ -540,15 +546,16 @@ func TestUpgradedCombatStatsAndDamage(t *testing.T) {
 	a.Units = []Unit{{Token: 1, Slot: 0, Stars: 4}}
 	b.Units = []Unit{{Token: 2, Slot: 0, Stars: 1}}
 	plan := r.Start(1200)
-	if plan.Units[0].MaxHP != 400 || plan.Units[0].Attack != 120 || plan.Units[0].Speed != 16 {
+	stats := StatsFor(0, 4)
+	if plan.Units[0].MaxHP != stats.HP || plan.Units[0].Attack != stats.HP || plan.Units[0].Speed != 10 || plan.Units[0].Armor != stats.Armor {
 		t.Fatal("four-star stats")
 	}
 	first := plan.Events[0]
-	if first.Damage < 100 || first.Damage > 160 {
+	if first.Damage != stats.HP {
 		t.Fatal("attack upgrade did not affect damage")
 	}
-	if len(plan.Events) > 1 && plan.Events[1].AtMS-first.AtMS != 1500 {
-		t.Fatal("speed did not affect turn time")
+	if len(plan.Events) > 1 && plan.Events[1].AtMS-first.AtMS < 3700 {
+		t.Fatal("not enough time for multi-hit presentation")
 	}
 	if plan.Winner == "A" && plan.PlayerDamage != a.ShopLevel+4 {
 		t.Fatal("upgraded survivor stars in player damage")

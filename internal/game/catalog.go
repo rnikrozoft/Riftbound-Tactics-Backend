@@ -22,6 +22,7 @@ type CharacterStats struct {
 	DamageMin int `json:"damage_min"`
 	DamageMax int `json:"damage_max"`
 	Speed     int `json:"speed"`
+	Armor     int `json:"armor"`
 }
 type CharacterDefinition struct {
 	Kind               int              `json:"kind"`
@@ -55,6 +56,7 @@ type CharacterDefinition struct {
 	PortraitW          int              `json:"portrait_w"`
 	PortraitH          int              `json:"portrait_h"`
 	Stats              []CharacterStats `json:"stats"`
+	Combat             *CombatRules     `json:"combat,omitempty"`
 }
 type CharacterCatalog struct {
 	SchemaVersion int                   `json:"schema_version"`
@@ -145,14 +147,19 @@ func ValidateCharacterCatalog(c CharacterCatalog) error {
 				return fmt.Errorf("kind %d: invalid image crop", kind)
 			}
 		}
-		if d.AbilityKey != "basic_attack" || d.AbilityCondition != "each_turn" || d.PassiveKey != "none" || d.PassiveCondition != "none" {
+		if (d.AbilityKey != "basic_attack" && d.AbilityKey != "character_combat") || d.AbilityCondition != "each_turn" || d.PassiveKey != "none" || d.PassiveCondition != "none" {
 			return fmt.Errorf("kind %d: unsupported ability behavior", kind)
+		}
+		if d.Combat != nil {
+			if err := d.Combat.Validate(); err != nil {
+				return fmt.Errorf("kind %d: %w", kind, err)
+			}
 		}
 		if len(d.Stats) != 4 {
 			return fmt.Errorf("kind %d: requires four star stats", kind)
 		}
 		for i, s := range d.Stats {
-			if s.Stars != i+1 || s.HP < 1 || s.HP > 100000 || s.Attack < 1 || s.Attack > 100000 || s.DamageMin < 1 || s.DamageMax < s.DamageMin || s.DamageMax > 100000 || s.Speed < 1 || s.Speed > 1000 {
+			if s.Stars != i+1 || s.HP < 1 || s.HP > 100000 || s.Armor < 0 || s.Armor > 100000 || s.Attack < 1 || s.Attack > 100000 || s.DamageMin < 1 || s.DamageMax < s.DamageMin || s.DamageMax > 100000 || s.Speed < 1 || s.Speed > 1000 {
 				return fmt.Errorf("kind %d: invalid star stats", kind)
 			}
 		}
@@ -456,7 +463,7 @@ func LoadCharacterWorkbook(path string) (CharacterCatalog, error) {
 			return c, fmt.Errorf("StarStats row %d: damage_min exceeds damage_max", row.row)
 		}
 		statsSeen[key] = true
-		c.Characters[i].Stats = append(c.Characters[i].Stats, CharacterStats{values["stars"], values["hp"], values["attack"], values["damage_min"], values["damage_max"], values["speed"]})
+		c.Characters[i].Stats = append(c.Characters[i].Stats, CharacterStats{Stars: values["stars"], HP: values["hp"], Attack: values["attack"], DamageMin: values["damage_min"], DamageMax: values["damage_max"], Speed: values["speed"]})
 	}
 	sort.Slice(c.Characters, func(i, j int) bool { return c.Characters[i].Kind < c.Characters[j].Kind })
 	groups := map[[2]int]int{}
