@@ -7,3 +7,4 @@ RUN go test -race ./... && go build --trimpath --buildmode=plugin -o /backend/ri
 FROM heroiclabs/nakama:3.37.0
 COPY --from=builder /backend/riftbound.so /nakama/data/modules/riftbound.so
 COPY local.yml /nakama/data/local.yml
+COPY data/characters.json /nakama/data/characters.json

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,23 @@ const opSnapshot int64 = 2
 const opError int64 = 3
 
 func InitModule(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, initializer runtime.Initializer) error {
+	path := os.Getenv("RIFTBOUND_CHARACTERS_FILE")
+	if path == "" {
+		path = "/nakama/data/characters.json"
+	}
+	catalog, loadErr := game.LoadCharacterCatalog(path)
+	if loadErr != nil {
+		return loadErr
+	}
+	game.UseCatalog(catalog)
+	logger.Info("Loaded %d character definitions from %s", len(catalog.Characters), path)
+	if err := initializer.RegisterRpc("character_catalog", func(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
+		data, err := json.Marshal(game.Catalog())
+		return string(data), err
+	}); err != nil {
+		return err
+	}
+
 	_, err := db.ExecContext(ctx, `
  CREATE TABLE IF NOT EXISTS rift_rooms (
  code TEXT PRIMARY KEY, match_id TEXT NOT NULL DEFAULT '', creator TEXT NOT NULL,

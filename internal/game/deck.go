@@ -16,20 +16,23 @@ type Deck struct {
 	Cards  []DeckCard `json:"cards"`
 }
 
-func CardGroup(kind int) int {
-	if kind < 30 {
-		return kind % 6 / 2
-	}
-	if kind < 40 {
-		return 3
-	}
-	return 4
-}
-func DefaultDeck() Deck {
-	d := Deck{Name: "Starter", Heroes: []int{0, 1, 2}}
-	for k := 0; k < CardKinds; k++ {
-		if k < 30 || k >= 40 && (k-40)%4 < 2 {
-			d.Cards = append(d.Cards, DeckCard{Kind: k, Copies: 4})
+func CardGroup(kind int) int { return Character(kind).Group }
+func DefaultDeck() Deck      { return deckForGroups("Starter", []int{0, 1, 2}) }
+func deckForGroups(name string, heroes []int) Deck {
+	d := Deck{Name: name, Heroes: heroes}
+	groups := append(append([]int{}, heroes...), NeutralGroup)
+	for _, group := range groups {
+		for cost := 2; cost <= 6; cost++ {
+			n := 0
+			for _, c := range catalog.Characters {
+				if c.Enabled && c.Group == group && c.Cost == cost {
+					d.Cards = append(d.Cards, DeckCard{Kind: c.Kind, Copies: c.MaxCopies})
+					n++
+					if n == 2 {
+						break
+					}
+				}
+			}
 		}
 	}
 	return d
@@ -41,9 +44,9 @@ func ValidateDeck(d Deck) error {
 	if len(d.Heroes) != 3 || len(d.Cards) != 40 {
 		return errors.New("deck requires three heroes and forty distinct card slots")
 	}
-	groups := map[int]bool{4: true}
+	groups := map[int]bool{NeutralGroup: true}
 	for _, g := range d.Heroes {
-		if g < 0 || g > 3 || groups[g] {
+		if !IsHeroGroup(g) || groups[g] {
 			return errors.New("choose three different heroes")
 		}
 		groups[g] = true
@@ -51,7 +54,7 @@ func ValidateDeck(d Deck) error {
 	seen := map[int]bool{}
 	counts := map[[2]int]int{}
 	for _, c := range d.Cards {
-		if c.Kind < 0 || c.Kind >= CardKinds || c.Copies < 1 || c.Copies > 4 || seen[c.Kind] || !groups[CardGroup(c.Kind)] {
+		if c.Kind < 0 || c.Kind >= CardKinds || c.Copies < 1 || c.Copies > Character(c.Kind).MaxCopies || !Character(c.Kind).Enabled || seen[c.Kind] || !groups[CardGroup(c.Kind)] {
 			return errors.New("invalid card kind, group or copy count")
 		}
 		seen[c.Kind] = true
@@ -75,7 +78,7 @@ func (r *Room) SetDeck(id string, d Deck) error {
 		return errors.New("deck can only be selected before preparation")
 	}
 	p.DeckName = d.Name
-	p.RemainingCopies = [CardKinds]int{}
+	p.RemainingCopies = make([]int, CardKinds)
 	for _, c := range d.Cards {
 		p.RemainingCopies[c.Kind] = c.Copies
 	}

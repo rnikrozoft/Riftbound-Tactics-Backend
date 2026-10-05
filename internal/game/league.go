@@ -7,30 +7,24 @@ import (
 )
 
 const LeagueSeats = 6
-const MaxLeagueBattleMS int64 = 30_000
+const MaxLeagueBattleMS int64 = 60_000
 
 // Immutable content is prepared once at runtime startup; only player state is
 // allocated per match. Policies use normal action validation and no extra income.
-var botDeckTemplates = func() []Deck {
+var botDeckTemplates = makeBotDeckTemplates()
+
+func makeBotDeckTemplates() []Deck {
 	decks := []Deck{}
-	for excluded := 0; excluded < 4; excluded++ {
-		d := Deck{Name: "Bot expedition"}
-		groups := map[int]bool{4: true}
-		for g := 0; g < 4; g++ {
-			if g != excluded {
-				d.Heroes = append(d.Heroes, g)
-				groups[g] = true
+	groups := HeroGroups()
+	for a := 0; a < len(groups); a++ {
+		for b := a + 1; b < len(groups); b++ {
+			for c := b + 1; c < len(groups); c++ {
+				decks = append(decks, deckForGroups("Bot expedition", []int{groups[a], groups[b], groups[c]}))
 			}
 		}
-		for k := 0; k < CardKinds; k++ {
-			if groups[CardGroup(k)] && (k < 40 || (k-40)%4 < 2) {
-				d.Cards = append(d.Cards, DeckCard{Kind: k, Copies: 4})
-			}
-		}
-		decks = append(decks, d)
 	}
 	return decks
-}()
+}
 
 type Seat struct {
 	ID     string `json:"id"`
@@ -92,7 +86,7 @@ func NewLeague(seats []Seat, seed int64) (*League, error) {
 		p := newPlayer(s.ID, "A")
 		p.Connected = s.Bot
 		p.DeckName = s.Deck.Name
-		p.RemainingCopies = [CardKinds]int{}
+		p.RemainingCopies = make([]int, CardKinds)
 		for _, c := range s.Deck.Cards {
 			p.RemainingCopies[c.Kind] = c.Copies
 		}
@@ -372,6 +366,11 @@ func (l *League) Tick(now int64) {
 		done := true
 		end := int64(0)
 		for _, r := range l.Duels {
+			// Unobserved bot fights have an already computed result and need
+			// no replay time. Only fights with human participants hold the round.
+			if !l.hasHumanParticipant(r) {
+				continue
+			}
 			if r.State.Battle.EndMS > end {
 				end = r.State.Battle.EndMS
 			}
@@ -382,7 +381,11 @@ func (l *League) Tick(now int64) {
 		if done {
 			before := len(l.Alive())
 			for _, r := range l.Duels {
-				r.Finish(now)
+				finishMS := now
+				if !l.hasHumanParticipant(r) && finishMS < r.State.Battle.EndMS {
+					finishMS = r.State.Battle.EndMS
+				}
+				r.Finish(finishMS)
 			}
 			eliminated := []int{}
 			for i, p := range l.Players {
@@ -406,6 +409,15 @@ func (l *League) Tick(now int64) {
 	if l.Phase == "finished" && now >= l.advanceMS {
 		l.Prepare(now)
 	}
+}
+func (l *League) hasHumanParticipant(r *Room) bool {
+	for _, p := range r.State.Players {
+		i := l.Index(p.UserID)
+		if i >= 0 && !l.Seats[i].Bot && l.Players[i].Connected && l.Players[i].HP > 0 {
+			return true
+		}
+	}
+	return false
 }
 func (l *League) View(id string, now int64) State {
 	i := l.Index(id)

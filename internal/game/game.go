@@ -9,7 +9,6 @@ import (
 const ShopLimit = 5
 const StartingCoins = 4
 const CardPrice = 2
-const CardKinds = 60
 const MaxShopLevel = 6
 const MaxPlayerHP = 30
 const RerollCost = 2
@@ -24,15 +23,8 @@ func RoundIncome(round int) int {
 	}
 	return incomes[round-1]
 }
-func CardCost(kind int) int {
-	if kind < 30 {
-		return 2 + kind/6
-	}
-	if kind < 40 {
-		return 2 + (kind-30)/2
-	}
-	return 2 + (kind-40)/4
-}
+func CardCost(kind int) int { return Character(kind).Cost }
+
 func ShopSlots(level int) int {
 	switch level {
 	case 2:
@@ -82,22 +74,23 @@ type Unit struct {
 	PurchasePrice int  `json:"purchase_price"`
 }
 type Player struct {
-	DeckName        string         `json:"deck_name"`
-	HP              int            `json:"hp"`
-	LastDamage      int            `json:"last_damage"`
-	UserID          string         `json:"user_id"`
-	Team            string         `json:"team"`
-	Connected       bool           `json:"connected"`
-	Ready           bool           `json:"ready"`
-	Coins           int            `json:"coins"`
-	ShopLocked      bool           `json:"shop_locked"`
-	ShopLevel       int            `json:"shop_level"`
-	UpgradeCost     int            `json:"upgrade_cost"`
-	RemainingCopies [CardKinds]int `json:"-"`
-	Offers          []Card         `json:"offers"`
-	Hand            []Card         `json:"hand"`
-	HandCount       int            `json:"hand_count"`
-	Units           []Unit         `json:"units"`
+	DeckName          string       `json:"deck_name"`
+	HP                int          `json:"hp"`
+	LastDamage        int          `json:"last_damage"`
+	UserID            string       `json:"user_id"`
+	Team              string       `json:"team"`
+	Connected         bool         `json:"connected"`
+	Ready             bool         `json:"ready"`
+	Coins             int          `json:"coins"`
+	ShopLocked        bool         `json:"shop_locked"`
+	LockedOfferTokens map[int]bool `json:"-"`
+	ShopLevel         int          `json:"shop_level"`
+	UpgradeCost       int          `json:"upgrade_cost"`
+	RemainingCopies   []int        `json:"-"`
+	Offers            []Card       `json:"offers"`
+	Hand              []Card       `json:"hand"`
+	HandCount         int          `json:"hand_count"`
+	Units             []Unit       `json:"units"`
 }
 type Action struct {
 	Type     string `json:"type"`
@@ -157,6 +150,7 @@ func New(code, creator string, seed int64) *Room {
 }
 func newPlayer(id, team string) *Player {
 	p := &Player{UserID: id, Team: team, HP: MaxPlayerHP, ShopLevel: 2, UpgradeCost: 2, Offers: []Card{}, Hand: []Card{}, Units: []Unit{}}
+	p.RemainingCopies = make([]int, CardKinds)
 	deck := DefaultDeck()
 	p.DeckName = deck.Name
 	for _, card := range deck.Cards {
@@ -216,10 +210,26 @@ func (r *Room) Prepare(now int64) {
 				p.UpgradeCost = 0
 			}
 		}
+		replacedKinds := map[int]bool{}
+		if p.ShopLocked {
+			retained := p.Offers[:0]
+			for _, card := range p.Offers {
+				if p.LockedOfferTokens[card.Token] {
+					retained = append(retained, card)
+				} else {
+					replacedKinds[card.Kind] = true
+				}
+			}
+			p.Offers = retained
+			if len(p.Offers) == 0 {
+				p.ShopLocked = false
+				p.LockedOfferTokens = nil
+			}
+		}
 		if !p.ShopLocked {
 			r.rollShop(p)
 		} else {
-			r.fillShop(p)
+			r.fillShopExcept(p, replacedKinds)
 		}
 	}
 	r.State.Revision++
@@ -228,10 +238,11 @@ func (r *Room) rollShop(p *Player) {
 	p.Offers = p.Offers[:0]
 	r.fillShop(p)
 }
-func (r *Room) fillShop(p *Player) {
+func (r *Room) fillShop(p *Player) { r.fillShopExcept(p, nil) }
+func (r *Room) fillShopExcept(p *Player, excluded map[int]bool) {
 	candidates := []int{}
 	for kind, remaining := range p.RemainingCopies {
-		if remaining <= 0 || CardCost(kind) > p.ShopLevel {
+		if remaining <= 0 || !Character(kind).Enabled || CardCost(kind) > p.ShopLevel {
 			continue
 		}
 		present := false
@@ -244,6 +255,15 @@ func (r *Room) fillShop(p *Player) {
 		if !present {
 			candidates = append(candidates, kind)
 		}
+	}
+	preferred := []int{}
+	for _, kind := range candidates {
+		if !excluded[kind] {
+			preferred = append(preferred, kind)
+		}
+	}
+	if len(preferred) >= ShopSlots(p.ShopLevel)-len(p.Offers) {
+		candidates = preferred
 	}
 	for len(p.Offers) < ShopSlots(p.ShopLevel) && len(candidates) > 0 {
 		index := r.rng.Intn(len(candidates))
@@ -406,16 +426,22 @@ func (r *Room) Apply(id string, a Action, now int64) error {
 		p.ShopLevel++
 		p.UpgradeCost = UpgradeBaseCost(p.ShopLevel)
 	case "reroll":
-		if p.ShopLocked {
-			return errors.New("unlock shop before rerolling")
-		}
 		if p.Coins < RerollCost {
 			return errors.New("not enough coins")
 		}
 		p.Coins -= RerollCost
+		p.ShopLocked = false
+		p.LockedOfferTokens = nil
 		r.rollShop(p)
 	case "lock":
 		p.ShopLocked = !p.ShopLocked
+		p.LockedOfferTokens = nil
+		if p.ShopLocked {
+			p.LockedOfferTokens = map[int]bool{}
+			for _, card := range p.Offers {
+				p.LockedOfferTokens[card.Token] = true
+			}
+		}
 	case "ready":
 		p.Ready = true
 	default:
@@ -440,9 +466,9 @@ func (r *Room) Start(now int64) *Plan {
 			if stars < 1 {
 				stars = 1
 			}
-			plan.Units = append(plan.Units, CombatUnit{Stars: stars, ID: fmt.Sprintf("%s:%d", p.Team, u.Token), Team: p.Team, Token: u.Token, Kind: u.Kind, Slot: u.Slot, MaxHP: 100 * stars, Attack: 30 * stars, Speed: 10 + 2*(stars-1)})
+			plan.Units = append(plan.Units, CombatUnit{Stars: stars, ID: fmt.Sprintf("%s:%d", p.Team, u.Token), Team: p.Team, Token: u.Token, Kind: u.Kind, Slot: u.Slot, MaxHP: StatsFor(u.Kind, stars).HP, Attack: StatsFor(u.Kind, stars).Attack, Speed: StatsFor(u.Kind, stars).Speed})
 			alive[side] = append(alive[side], index)
-			hp[index] = 100 * stars
+			hp[index] = StatsFor(u.Kind, stars).HP
 		}
 	}
 	side := 0
@@ -451,7 +477,8 @@ func (r *Room) Start(now int64) *Plan {
 		attacker := alive[side][r.rng.Intn(len(alive[side]))]
 		targetIndex := r.rng.Intn(len(alive[1-side]))
 		target := alive[1-side][targetIndex]
-		damage := (25 + r.rng.Intn(16)) * plan.Units[attacker].Stars
+		stats := StatsFor(plan.Units[attacker].Kind, plan.Units[attacker].Stars)
+		damage := stats.DamageMin + r.rng.Intn(stats.DamageMax-stats.DamageMin+1)
 		hp[target] -= damage
 		if hp[target] < 0 {
 			hp[target] = 0

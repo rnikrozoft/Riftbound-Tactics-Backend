@@ -213,21 +213,18 @@ func TestEconomyLockRerollAndIncome(t *testing.T) {
 	action(t, r, "a", "lock", 0, 0)
 	saved := append([]Card(nil), p.Offers...)
 	coins := p.Coins
-	if r.Apply("a", Action{Type: "reroll", Round: 1}, 1100) == nil || p.Coins != coins {
-		t.Fatal("locked reroll")
-	}
 	r.Prepare(1200)
 	if !reflect.DeepEqual(saved, p.Offers[:len(saved)]) || len(p.Offers) != 3 || !p.ShopLocked || p.Coins != coins+6 {
 		t.Fatal("locked refill or income")
 	}
-	action(t, r, "a", "lock", 0, 0)
 	action(t, r, "a", "reroll", 0, 0)
-	if p.Coins != coins+6-2 || len(p.Offers) != 3 || p.Offers[0].Token == saved[0].Token {
+	if p.ShopLocked || p.Coins != coins+6-2 || len(p.Offers) != 3 || p.Offers[0].Token == saved[0].Token {
 		t.Fatal("paid reroll")
 	}
 	p.Coins = 1
+	p.ShopLocked = true
 	saved = append([]Card(nil), p.Offers...)
-	if r.Apply("a", Action{Type: "reroll", Round: 2}, 1300) == nil || !reflect.DeepEqual(saved, p.Offers) || p.Coins != 1 {
+	if r.Apply("a", Action{Type: "reroll", Round: 2}, 1300) == nil || !reflect.DeepEqual(saved, p.Offers) || p.Coins != 1 || !p.ShopLocked {
 		t.Fatal("unaffordable reroll")
 	}
 	action(t, r, "a", "ready", 0, 0)
@@ -634,5 +631,45 @@ func TestFieldUpgradeReturnsAutomaticallyAfterReadyButRejectsFullHand(t *testing
 	}
 	if r.Apply("a", Action{Type: "return", Token: 100, Round: 1}, 1100) == nil {
 		t.Fatal("manual return still forbidden")
+	}
+}
+
+func TestEmptyLockedShopUnlocksOnNextRound(t *testing.T) {
+	r := setup(t)
+	p := r.Player("a")
+	p.Coins = 6
+	action(t, r, "a", "lock", 0, 0)
+	for len(p.Offers) > 0 {
+		action(t, r, "a", "buy", p.Offers[0].Token, 0)
+	}
+	if !p.ShopLocked {
+		t.Fatal("empty shop unlocked before next round")
+	}
+	coins := p.Coins
+	r.Prepare(1200)
+	if p.ShopLocked || len(p.Offers) != 3 || p.Coins != coins+RoundIncome(2) {
+		t.Fatal("empty locked shop must unlock and refill without charging on next round")
+	}
+}
+
+func TestLockedShopOnlyPreservesOriginallyLockedOffers(t *testing.T) {
+	r := setup(t)
+	p := r.Player("a")
+	action(t, r, "a", "buy", p.Offers[0].Token, 0)
+	action(t, r, "a", "lock", 0, 0)
+	locked := append([]Card(nil), p.Offers...)
+	r.Prepare(1200)
+	added := p.Offers[2]
+	r.Prepare(1400)
+	if !p.ShopLocked || len(p.Offers) != 3 || !reflect.DeepEqual(p.Offers[:2], locked) || p.Offers[2].Token == added.Token || p.Offers[2].Kind == added.Kind {
+		t.Fatal("original offers must remain locked while filled offer changes each round")
+	}
+	p.Coins = 20
+	for _, card := range locked {
+		action(t, r, "a", "buy", card.Token, 0)
+	}
+	r.Prepare(1600)
+	if p.ShopLocked || len(p.Offers) != 3 {
+		t.Fatal("shop must unlock when all original locked offers are gone")
 	}
 }

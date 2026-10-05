@@ -1,13 +1,27 @@
 package game
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestLeagueBattleCapAndSharedPreparation(t *testing.T) {
-	l := leagueForTest(t)
+	seats := make([]Seat, LeagueSeats)
+	for i := range seats {
+		seats[i] = Seat{ID: fmt.Sprintf("human-%d", i), Deck: DefaultDeck(), Rating: 1000}
+	}
+	l, err := NewLeague(seats, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, seat := range seats {
+		l.Connected(seat.ID, true)
+	}
+	l.Prepare(1000)
 	l.Tick(l.DeadlineMS)
 	start := l.Duels[0].State.Battle.StartMS - 1500
-	if l.DeadlineMS != start+MaxLeagueBattleMS {
-		t.Fatal("battle must publish a shared 30 second deadline")
+	if l.DeadlineMS != start+60_000 {
+		t.Fatal("battle must publish a shared 60 second deadline")
 	}
 	// Model three presentation durations, including one exceeding the cap.
 	l.Duels[0].State.Battle.EndMS = start + 20_000
@@ -20,7 +34,7 @@ func TestLeagueBattleCapAndSharedPreparation(t *testing.T) {
 	if l.Phase != "battle" {
 		t.Fatal("early finisher must wait for other duels")
 	}
-	if err := l.Apply("human", Action{Type: "reroll", Round: l.Round}, start+20_000); err == nil {
+	if err := l.Apply("human-0", Action{Type: "reroll", Round: l.Round}, start+20_000); err == nil {
 		t.Fatal("shop must stay locked while another pair is fighting")
 	}
 	l.Tick(start + MaxLeagueBattleMS)
@@ -36,6 +50,92 @@ func TestLeagueBattleCapAndSharedPreparation(t *testing.T) {
 		if l.View(p.UserID, deadline-PreparationMS).DeadlineMS != deadline {
 			t.Fatal("all players must receive same full preparation deadline")
 		}
+	}
+}
+
+func TestLeagueBotDuelsDoNotDelayHumanNextRound(t *testing.T) {
+	l := leagueForTest(t)
+	l.Tick(l.DeadlineMS)
+	start := l.DeadlineMS - MaxLeagueBattleMS
+	human := l.Duel("human")
+	for _, r := range l.Duels {
+		r.State.Battle.EndMS = start + MaxLeagueBattleMS
+		r.State.Battle.Winner = "A"
+		r.State.Battle.PlayerDamage = 3
+	}
+	human.State.Battle.EndMS = start + 5000
+	l.Tick(start + 4999)
+	if l.Phase != "battle" {
+		t.Fatal("human replay must finish first")
+	}
+	l.Tick(start + 5000)
+	if l.Phase != "finished" {
+		t.Fatal("bot replays must not delay settlement")
+	}
+	for _, r := range l.Duels {
+		if r.State.Players[1].HP != 27 {
+			t.Fatal("bot and human results must still apply once")
+		}
+	}
+	l.Tick(start + 6999)
+	if l.Phase != "finished" {
+		t.Fatal("retain the two second result display")
+	}
+	l.Tick(start + 7000)
+	if l.Phase != "preparation" || l.Round != 2 {
+		t.Fatal("open the next round after human result display")
+	}
+}
+
+func TestLeagueDisconnectedDuelsDoNotHoldRound(t *testing.T) {
+	seats := make([]Seat, LeagueSeats)
+	for i := range seats {
+		seats[i] = Seat{ID: fmt.Sprintf("human-%d", i), Deck: DefaultDeck()}
+	}
+	l, err := NewLeague(seats, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range seats {
+		l.Connected(s.ID, true)
+	}
+	l.Prepare(1000)
+	l.Tick(l.DeadlineMS)
+	start := l.DeadlineMS - MaxLeagueBattleMS
+	for _, r := range l.Duels {
+		r.State.Battle.EndMS = start + 60_000
+		r.State.Battle.Winner = "A"
+		r.State.Battle.PlayerDamage = 3
+	}
+	l.Duels[0].State.Battle.EndMS = start + 5000
+	for _, r := range l.Duels[1:] {
+		for _, p := range r.State.Players {
+			l.Connected(p.UserID, false)
+		}
+	}
+	l.Tick(start + 5000)
+	if l.Phase != "finished" {
+		t.Fatal("disconnected human replays must not hold connected players")
+	}
+	for _, r := range l.Duels {
+		if r.State.Players[1].HP != 27 {
+			t.Fatal("all results must still settle")
+		}
+	}
+	l.Tick(start + 7000)
+	if l.Phase != "preparation" {
+		t.Fatal("next round must open after result display")
+	}
+}
+
+func TestLeagueEliminatedGhostDoesNotCountAsViewer(t *testing.T) {
+	l := leagueForTest(t)
+	l.Players[0].HP = 0
+	ghost := clonePlayer(l.Players[0])
+	ghost.HP = 30
+	r := &Room{State: State{Players: [2]*Player{&ghost, l.Players[1]}}}
+	if l.hasHumanParticipant(r) {
+		t.Fatal("eliminated player's ghost must not hold replay time")
 	}
 }
 
