@@ -44,13 +44,23 @@ func (m *leagueMatch) MatchJoinAttempt(ctx context.Context, logger runtime.Logge
 		return s, false, "Player eliminated; this match cannot be rejoined"
 	}
 	if old := s.presences[p.GetUserId()]; old != nil && old.GetSessionId() != p.GetSessionId() {
-		return s, false, "Already connected"
+		if err := d.MatchKick([]runtime.Presence{old}); err != nil {
+			return s, false, "Retry reconnect"
+		}
+		delete(s.presences, p.GetUserId())
 	}
 	return s, true, ""
 }
 func (m *leagueMatch) MatchJoin(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, d runtime.MatchDispatcher, tick int64, state interface{}, ps []runtime.Presence) interface{} {
 	s := state.(*leagueState)
 	for _, p := range ps {
+		previous := s.presences[p.GetUserId()]
+		if s.sequences == nil {
+			s.sequences = map[string]int64{}
+		}
+		if previous == nil || previous.GetSessionId() != p.GetSessionId() {
+			s.sequences[p.GetUserId()] = 0
+		}
 		s.presences[p.GetUserId()] = p
 		s.league.Connected(p.GetUserId(), true)
 	}

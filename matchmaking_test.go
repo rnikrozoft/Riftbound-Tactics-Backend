@@ -147,3 +147,17 @@ func TestEliminatedPlayerLeavesMatchAndCannotRejoin(t *testing.T) {
 		t.Fatal("kick must occur once")
 	}
 }
+
+func TestSessionEndOnlyRemovesItsOwnQueue(t *testing.T) {
+	resetQueue(t)
+	queue.entries["p"] = &queueEntry{Session: "new-session"}
+	queueSessionEnded(queueContext("p"), nil, nil)
+	if queue.entries["p"] == nil {
+		t.Fatal("late old event removed new search")
+	}
+	ctx := context.WithValue(queueContext("p"), runtime.RUNTIME_CTX_SESSION_ID, "new-session")
+	queueSessionEnded(ctx, nil, nil)
+	if queue.entries["p"] != nil {
+		t.Fatal("ended session left stale search")
+	}
+}

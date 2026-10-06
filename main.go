@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -31,6 +32,9 @@ func InitModule(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runti
 		return loadErr
 	}
 	game.UseCatalog(catalog)
+	if err := initializePlayerStorage(ctx, nk, initializer, catalog); err != nil {
+		return err
+	}
 	logger.Info("Loaded %d character definitions from %s", len(catalog.Characters), path)
 	if err := initializer.RegisterRpc("character_catalog", func(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
 		data, err := json.Marshal(game.Catalog())
@@ -40,10 +44,6 @@ func InitModule(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runti
 	}
 
 	_, err := db.ExecContext(ctx, `
- CREATE TABLE IF NOT EXISTS rift_rooms (
- code TEXT PRIMARY KEY, match_id TEXT NOT NULL DEFAULT '', creator TEXT NOT NULL,
- created_at TIMESTAMPTZ NOT NULL DEFAULT now(), expires_at TIMESTAMPTZ NOT NULL DEFAULT now()+interval '30 minutes'
- );
  CREATE TABLE IF NOT EXISTS rift_battles (
  match_id TEXT NOT NULL, round INTEGER NOT NULL, code TEXT NOT NULL,
  result JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(match_id,round)
@@ -122,41 +122,42 @@ func createRoom(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runti
 	var request struct {
 		Deck *game.Deck `json:"deck"`
 	}
-	if payload != "" && json.Unmarshal([]byte(payload), &request) != nil {
+	if len(payload) > 16384 || (payload != "" && json.Unmarshal([]byte(payload), &request) != nil) {
 		return "", runtime.NewError("Invalid deck request", 3)
 	}
 	deck := game.DefaultDeck()
 	if request.Deck != nil {
 		deck = *request.Deck
 	}
-	if err := game.ValidateDeck(deck); err != nil {
+	if err := validateOwnedDeck(ctx, nk, id, deck); err != nil {
 		return "", runtime.NewError(err.Error(), 3)
 	}
 	deckBytes, _ := json.Marshal(deck)
-	if _, err = db.ExecContext(ctx, "DELETE FROM rift_rooms WHERE expires_at<now()"); err != nil {
-		return "", runtime.NewError("Room storage unavailable", 14)
-	}
 	for attempt := 0; attempt < 20; attempt++ {
 		number, err := rand.Int(rand.Reader, big.NewInt(900000))
 		if err != nil {
 			return "", err
 		}
 		code := strconv.FormatInt(100000+number.Int64(), 10)
-		result, err := db.ExecContext(ctx, "INSERT INTO rift_rooms(code,creator) VALUES($1,$2) ON CONFLICT DO NOTHING", code, id)
-		if err != nil {
-			return "", runtime.NewError("Room storage unavailable", 14)
-		}
-		count, _ := result.RowsAffected()
-		if count == 0 {
+		reservation := roomDirectoryEntry{Creator: id, ExpiresMs: time.Now().Add(30 * time.Minute).UnixMilli()}
+		raw, _ := json.Marshal(reservation)
+		acks, err := nk.StorageWrite(ctx, []*runtime.StorageWrite{{Collection: roomDirectoryCollection, Key: code, Value: string(raw), Version: "*", PermissionRead: 0, PermissionWrite: 0}})
+		if errors.Is(err, runtime.ErrStorageRejectedVersion) {
+			reclaimExpiredRoom(ctx, nk, code)
 			continue
+		}
+		if err != nil || len(acks) != 1 {
+			return "", runtime.NewError("Room storage unavailable", 14)
 		}
 		matchID, err := nk.MatchCreate(ctx, "riftbound_room", map[string]interface{}{"code": code, "creator": id, "deck": string(deckBytes)})
 		if err != nil {
-			db.ExecContext(ctx, "DELETE FROM rift_rooms WHERE code=$1", code)
+			nk.StorageDelete(ctx, []*runtime.StorageDelete{{Collection: roomDirectoryCollection, Key: code, Version: acks[0].Version}})
 			logger.Error("MatchCreate: %v", err)
 			return "", runtime.NewError("Unable to create room", 14)
 		}
-		if _, err = db.ExecContext(ctx, "UPDATE rift_rooms SET match_id=$2 WHERE code=$1", code, matchID); err != nil {
+		reservation.MatchID = matchID
+		raw, _ = json.Marshal(reservation)
+		if _, err = nk.StorageWrite(ctx, []*runtime.StorageWrite{{Collection: roomDirectoryCollection, Key: code, Value: string(raw), Version: acks[0].Version, PermissionRead: 0, PermissionWrite: 0}}); err != nil {
 			return "", runtime.NewError("Room storage unavailable", 14)
 		}
 		return roomResponse(code, matchID)
@@ -170,7 +171,7 @@ func joinRoom(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime
 	var request struct {
 		Code string `json:"code"`
 	}
-	if json.Unmarshal([]byte(payload), &request) != nil {
+	if len(payload) > 16384 || json.Unmarshal([]byte(payload), &request) != nil {
 		return "", runtime.NewError("Invalid request", 3)
 	}
 	code := strings.TrimSpace(request.Code)
@@ -182,10 +183,15 @@ func joinRoom(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime
 			return "", runtime.NewError("Enter a 6-digit room code", 3)
 		}
 	}
-	var matchID string
-	if err := db.QueryRowContext(ctx, "SELECT match_id FROM rift_rooms WHERE code=$1 AND expires_at>now()", code).Scan(&matchID); err != nil || matchID == "" {
+	objects, err := nk.StorageRead(ctx, []*runtime.StorageRead{{Collection: roomDirectoryCollection, Key: code, UserID: systemStorageOwner}})
+	if err != nil {
+		return "", runtime.NewError("Room storage unavailable", 14)
+	}
+	var entry roomDirectoryEntry
+	if len(objects) != 1 || json.Unmarshal([]byte(objects[0].Value), &entry) != nil || entry.MatchID == "" || entry.ExpiresMs <= time.Now().UnixMilli() {
 		return "", runtime.NewError("Room not found", 5)
 	}
+	matchID := entry.MatchID
 	match, err := nk.MatchGet(ctx, matchID)
 	if err != nil || match == nil {
 		return "", runtime.NewError("Room closed", 5)
@@ -230,17 +236,20 @@ func (m *roomMatch) MatchInit(ctx context.Context, logger runtime.Logger, db *sq
 }
 func (m *roomMatch) MatchJoinAttempt(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, dispatcher runtime.MatchDispatcher, tick int64, state interface{}, presence runtime.Presence, metadata map[string]string) (interface{}, bool, string) {
 	s := state.(*matchState)
-	if existing := s.presences[presence.GetUserId()]; existing != nil && existing.GetSessionId() != presence.GetSessionId() {
-		return s, false, "User already connected"
-	}
 	deck := game.DefaultDeck()
 	if raw := metadata["deck"]; raw != "" {
 		if json.Unmarshal([]byte(raw), &deck) != nil {
 			return s, false, "Invalid deck"
 		}
 	}
-	if err := game.ValidateDeck(deck); err != nil {
+	if err := validateOwnedDeck(ctx, nk, presence.GetUserId(), deck); err != nil {
 		return s, false, err.Error()
+	}
+	if existing := s.presences[presence.GetUserId()]; existing != nil && existing.GetSessionId() != presence.GetSessionId() {
+		if err := dispatcher.MatchKick([]runtime.Presence{existing}); err != nil {
+			return s, false, "Retry reconnect"
+		}
+		delete(s.presences, presence.GetUserId())
 	}
 	existingPlayer := s.room.Player(presence.GetUserId()) != nil
 	if !s.room.Reserve(presence.GetUserId()) {
@@ -257,6 +266,13 @@ func (m *roomMatch) MatchJoin(ctx context.Context, logger runtime.Logger, db *sq
 	s := state.(*matchState)
 	now := time.Now().UnixMilli()
 	for _, p := range presences {
+		previous := s.presences[p.GetUserId()]
+		if s.sequences == nil {
+			s.sequences = map[string]int64{}
+		}
+		if previous == nil || previous.GetSessionId() != p.GetSessionId() {
+			s.sequences[p.GetUserId()] = 0
+		}
 		s.presences[p.GetUserId()] = p
 		s.room.Connect(p.GetUserId(), now)
 	}
@@ -345,7 +361,7 @@ func (m *roomMatch) MatchLoop(ctx context.Context, logger runtime.Logger, db *sq
 		broadcast(s, dispatcher, now)
 	}
 	if (s.emptySince > 0 && now-s.emptySince > 60000) || (s.room.State.Phase == "waiting" && now-s.createdMS > 600000) {
-		db.ExecContext(ctx, "DELETE FROM rift_rooms WHERE code=$1", s.room.State.Code)
+		deleteRoomDirectory(ctx, nk, s.room.State.Code)
 		return nil
 	}
 	return s
@@ -368,7 +384,7 @@ func sendError(dispatcher runtime.MatchDispatcher, presence runtime.Presence, me
 }
 func (m *roomMatch) MatchTerminate(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, dispatcher runtime.MatchDispatcher, tick int64, state interface{}, graceSeconds int) interface{} {
 	s := state.(*matchState)
-	db.ExecContext(ctx, "DELETE FROM rift_rooms WHERE code=$1", s.room.State.Code)
+	deleteRoomDirectory(ctx, nk, s.room.State.Code)
 	for _, p := range s.presences {
 		sendError(dispatcher, p, "Server shutting down", 0)
 	}
@@ -397,4 +413,49 @@ func recipientState(state game.State, id string) game.State {
 		}
 	}
 	return view
+}
+
+const roomDirectoryCollection = "riftbound_rooms"
+const systemStorageOwner = "00000000-0000-0000-0000-000000000000"
+
+type roomDirectoryEntry struct {
+	Creator   string `json:"creator"`
+	MatchID   string `json:"match_id"`
+	ExpiresMs int64  `json:"expires_ms"`
+}
+
+func deleteRoomDirectory(ctx context.Context, nk runtime.NakamaModule, code string) {
+	if nk == nil {
+		return
+	}
+	objects, err := nk.StorageRead(ctx, []*runtime.StorageRead{{Collection: roomDirectoryCollection, Key: code, UserID: systemStorageOwner}})
+	if err != nil || len(objects) != 1 {
+		return
+	}
+	var entry roomDirectoryEntry
+	if json.Unmarshal([]byte(objects[0].Value), &entry) != nil {
+		return
+	}
+	matchID, _ := ctx.Value(runtime.RUNTIME_CTX_MATCH_ID).(string)
+	if matchID == "" || entry.MatchID != matchID {
+		return
+	}
+	nk.StorageDelete(ctx, []*runtime.StorageDelete{{Collection: roomDirectoryCollection, Key: code, Version: objects[0].Version}})
+}
+func reclaimExpiredRoom(ctx context.Context, nk runtime.NakamaModule, code string) {
+	objects, err := nk.StorageRead(ctx, []*runtime.StorageRead{{Collection: roomDirectoryCollection, Key: code, UserID: systemStorageOwner}})
+	if err != nil || len(objects) != 1 {
+		return
+	}
+	var entry roomDirectoryEntry
+	if json.Unmarshal([]byte(objects[0].Value), &entry) != nil || entry.ExpiresMs > time.Now().UnixMilli() {
+		return
+	}
+	if entry.MatchID != "" {
+		match, err := nk.MatchGet(ctx, entry.MatchID)
+		if err != nil || match != nil {
+			return
+		}
+	}
+	nk.StorageDelete(ctx, []*runtime.StorageDelete{{Collection: roomDirectoryCollection, Key: code, Version: objects[0].Version}})
 }

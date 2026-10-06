@@ -554,7 +554,7 @@ func TestUpgradedCombatStatsAndDamage(t *testing.T) {
 	if first.Damage != stats.HP {
 		t.Fatal("attack upgrade did not affect damage")
 	}
-	if len(plan.Events) > 1 && plan.Events[1].AtMS-first.AtMS < 3700 {
+	if len(plan.Events) > 1 && plan.Events[1].AtMS-first.AtMS != combatPresentationMS(first, Character(0).Combat) {
 		t.Fatal("not enough time for multi-hit presentation")
 	}
 	if plan.Winner == "A" && plan.PlayerDamage != a.ShopLevel+4 {

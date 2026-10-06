@@ -4,6 +4,8 @@ logger:
 socket:
   server_key: riftbound-debug-key
 session:
+  single_socket: true
+  single_session: true
   token_expiry_sec: 7200
   refresh_token_expiry_sec: 604800
 console:

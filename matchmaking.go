@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/rtapi"
 	"github.com/heroiclabs/nakama-common/runtime"
 	"github.com/rnikrozoft/riftbound-tactics-backend/internal/game"
@@ -42,6 +43,9 @@ func registerMatchmaking(i runtime.Initializer) error {
 	if err := i.RegisterBeforeRt("MatchmakerAdd", beforeMatchmaker); err != nil {
 		return err
 	}
+	if err := i.RegisterEventSessionEnd(queueSessionEnded); err != nil {
+		return err
+	}
 	return i.RegisterMatchmakerMatched(matchmade)
 }
 func queueBegin(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
@@ -56,10 +60,10 @@ func queueBegin(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runti
 	var req struct {
 		Deck game.Deck `json:"deck"`
 	}
-	if json.Unmarshal([]byte(payload), &req) != nil {
+	if len(payload) > 16384 || json.Unmarshal([]byte(payload), &req) != nil {
 		return "", runtime.NewError("Invalid deck", 3)
 	}
-	if err := game.ValidateDeck(req.Deck); err != nil {
+	if err := validateOwnedDeck(ctx, nk, id, req.Deck); err != nil {
 		return "", runtime.NewError(err.Error(), 3)
 	}
 	mmr, err := loadMMR(ctx, db, id)
@@ -74,7 +78,7 @@ func queueBegin(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runti
 			delete(queue.entries, k)
 		}
 	}
-	if old := queue.entries[id]; old != nil {
+	if old := queue.entries[id]; old != nil && old.Session == session {
 		return "", runtime.NewError("Already searching or assigned; cancel the previous search first", 9)
 	}
 	// Match only by persisted server-owned skill MMR. Wins do not enter this path.
@@ -166,4 +170,21 @@ func queueCancel(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runt
 		delete(queue.entries, id)
 	}
 	return "{}", nil
+}
+
+// Events are asynchronous: an old socket ending must not remove a newer search.
+func queueSessionEnded(ctx context.Context, logger runtime.Logger, evt *api.Event) {
+	id, err := userID(ctx)
+	if err != nil {
+		return
+	}
+	session := queueSession(ctx)
+	if session == "" {
+		return
+	}
+	queue.Lock()
+	defer queue.Unlock()
+	if entry := queue.entries[id]; entry != nil && entry.Session == session {
+		delete(queue.entries, id)
+	}
 }

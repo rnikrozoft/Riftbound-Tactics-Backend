@@ -576,14 +576,7 @@ func (r *Room) startEffects(now int64) *Plan {
 		if a := f.pick(choices); a != nil {
 			target := f.pick(f.alive(1 - side))
 			f.action(a, target, at)
-			frames := 8
-			if a.rules != nil {
-				frames = a.rules.Actions[(a.turn-1)%len(a.rules.Actions)].Frames
-			}
-			if a.rules != nil {
-				frames = max(frames, a.rules.FinisherFrames)
-			}
-			at += max(int64(3700), int64(frames*1000/12+2200))
+			at += combatPresentationMS(f.plan.Events[len(f.plan.Events)-1], a.rules)
 		}
 		side = 1 - side
 	}
@@ -611,4 +604,42 @@ func (r *Room) startEffects(now int64) *Plan {
 	r.State.Battle = f.plan
 	r.State.Revision++
 	return f.plan
+}
+
+// Reserve only the presentation actually used: animation, travel, impact pauses,
+// a short breathing gap, and charge/zoom only for lethal attacks.
+func combatPresentationMS(event CombatEvent, rules *CombatRules) int64 {
+	frames := 8
+	if event.Mode == "stun" {
+		frames = 4
+	} else if rules != nil {
+		for _, action := range rules.Actions {
+			if action.Animation == event.Animation {
+				frames = action.Frames
+				break
+			}
+		}
+		if rules.First != nil && rules.First.Animation == event.Animation {
+			frames = max(frames, rules.First.Frames)
+		}
+		if rules.Finisher == event.Animation && rules.FinisherFrames > 0 {
+			frames = rules.FinisherFrames
+		}
+	}
+	for _, hit := range event.Hits {
+		frames = max(frames, hit.Frame+1)
+	}
+	duration := int64((max(1, frames)*1000+11)/12 + 180)
+	if event.Mode == "melee" || event.Mode == "execute" {
+		duration += 560
+	}
+	for _, hit := range event.Hits {
+		if hit.Damage > 0 {
+			duration += 75
+		}
+	}
+	if event.Dead && event.Target != event.Attacker {
+		duration += 820
+	}
+	return duration
 }
