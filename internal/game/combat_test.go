@@ -343,3 +343,53 @@ func TestSummonBlockedOnFullFieldAndPoisonIgnoresBlock(t *testing.T) {
 		t.Fatal("poison consumed or was reduced by first block")
 	}
 }
+
+func TestCorrectedCharacterAttackPlayback(t *testing.T) {
+	for _, tc := range []struct {
+		slug, animation, mode string
+		frames                []int
+	}{
+		{"demon_b", "attack01", "ranged", []int{4}},
+		{"demon_b", "attack02", "melee", []int{3}},
+		{"demon_d", "attack02", "melee", []int{5, 8, 14}},
+		{"elite_orc", "attack02", "melee", []int{2, 6}},
+	} {
+		t.Run(tc.slug+"/"+tc.animation, func(t *testing.T) {
+			rules := bySlug(tc.slug).Combat
+			for index, rule := range rules.Actions {
+				if rule.Animation != tc.animation {
+					continue
+				}
+				f := fixtureFight(rules, basic("melee"))
+				a, b := f.units[0], f.units[1]
+				a.hp = 30
+				a.turn = index
+				f.action(a, b, 0)
+				event := f.plan.Events[0]
+				frames := []int{}
+				hps := []int{}
+				for _, hit := range event.Hits {
+					if hit.Source == a.unit.ID && hit.Target == b.unit.ID && hit.Kind == "damage" {
+						frames = append(frames, hit.Frame)
+						for _, change := range hit.Changes {
+							if change.ID == b.unit.ID {
+								hps = append(hps, change.HP)
+							}
+						}
+					}
+				}
+				if event.Mode != tc.mode || !reflect.DeepEqual(frames, tc.frames) || b.hp != 70 {
+					t.Fatalf("mode=%s frames=%v hp=%d", event.Mode, frames, b.hp)
+				}
+				for i := 1; i < len(hps); i++ {
+					if hps[i] >= hps[i-1] {
+						t.Fatal("each hit must apply distinct damage")
+					}
+				}
+				if tc.mode == "ranged" && a.hp != 30 {
+					t.Fatal("ranged attack incorrectly retaliated")
+				}
+			}
+		})
+	}
+}

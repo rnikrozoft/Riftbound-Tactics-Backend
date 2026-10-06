@@ -290,8 +290,8 @@ func playerDecksSave(ctx context.Context, l runtime.Logger, db *sql.DB, nk runti
 		Version       string      `json:"profile_version"`
 		ConfigVersion string      `json:"config_version"`
 	}
-	if len(payload) > 128*1024 || json.Unmarshal([]byte(payload), &req) != nil || len(req.Decks) < 1 || len(req.Decks) > 32 {
-		return "", runtime.NewError("Save 1-32 valid decks", 3)
+	if len(payload) > 128*1024 || json.Unmarshal([]byte(payload), &req) != nil || req.Decks == nil || len(req.Decks) > 32 {
+		return "", runtime.NewError("Save 0-32 valid decks", 3)
 	}
 	if req.ConfigVersion != activeConfigVersion {
 		return "", runtime.NewError("Game configuration changed; login again", 9)
@@ -317,7 +317,7 @@ func playerDecksSave(ctx context.Context, l runtime.Logger, db *sql.DB, nk runti
 			return "", runtime.NewError("Deck contains a character you do not own", 7)
 		}
 	}
-	if !seen[req.Selected] {
+	if (len(req.Decks) > 0 && !seen[req.Selected]) || (len(req.Decks) == 0 && req.Selected != "") {
 		return "", runtime.NewError("Select a saved deck", 3)
 	}
 	p.Decks = req.Decks

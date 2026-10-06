@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -281,5 +282,30 @@ func TestAdminPatchPublishDoesNotMutateActiveBattleConfiguration(t *testing.T) {
 	patch, _ = json.Marshal(map[string]interface{}{"storage_version": objects[0].Version, "character_patches": map[string]interface{}{id: map[string]interface{}{"character_id": "hacked"}}})
 	if _, err = adminConfigPublish(ctx, nil, nil, nk, string(patch)); err == nil {
 		t.Fatal("identity patch accepted")
+	}
+}
+
+func TestDeleteLastDeckPersistsAndPreservesCollection(t *testing.T) {
+	configForTest(t)
+	nk := inventoryFake()
+	ctx := queueContext("a")
+	p, v, _ := ensurePlayer(ctx, nk, "a", nil, "")
+	owned := append([]string{}, p.Owned...)
+	payload := func(version, selected string) string {
+		raw, _ := json.Marshal(map[string]interface{}{"decks": []savedDeck{}, "selected_deck_id": selected, "profile_version": version, "config_version": activeConfigVersion})
+		return string(raw)
+	}
+	if _, err := playerDecksSave(ctx, nil, nil, nk, payload(v, "starter")); err == nil {
+		t.Fatal("empty decks accepted stale selection")
+	}
+	if _, err := playerDecksSave(ctx, nil, nil, nk, payload(v, "")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := playerDecksSave(ctx, nil, nil, nk, payload(v, "")); err == nil {
+		t.Fatal("stale deletion accepted")
+	}
+	p, _, err := ensurePlayer(ctx, nk, "a", nil, "")
+	if err != nil || len(p.Decks) != 0 || p.SelectedID != "" || !reflect.DeepEqual(p.Owned, owned) {
+		t.Fatalf("deleted deck regenerated or collection changed: %v", err)
 	}
 }
