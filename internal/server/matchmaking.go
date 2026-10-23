@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -35,7 +35,7 @@ func registerMatchmaking(i runtime.Initializer) error {
 	}); err != nil {
 		return err
 	}
-	for name, fn := range map[string]func(context.Context, runtime.Logger, *sql.DB, runtime.NakamaModule, string) (string, error){"queue_begin": queueBegin, "queue_status": queueStatus, "queue_cancel": queueCancel} {
+	for name, fn := range map[string]func(context.Context, runtime.Logger, *sql.DB, runtime.NakamaModule, string) (string, error){"active_match": activeMatch, "active_match_leave": forgetActiveMatch, "queue_begin": queueBegin, "queue_status": queueStatus, "queue_cancel": queueCancel} {
 		if err := i.RegisterRpc(name, fn); err != nil {
 			return err
 		}
@@ -66,7 +66,7 @@ func queueBegin(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runti
 	if err := validateOwnedDeck(ctx, nk, id, req.Deck); err != nil {
 		return "", runtime.NewError(err.Error(), 3)
 	}
-	mmr, err := loadMMR(ctx, db, id)
+	mmr, err := loadMMR(ctx, nk, id)
 	if err != nil {
 		return "", err
 	}

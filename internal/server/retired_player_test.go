@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -216,7 +216,7 @@ func TestStartupUpgradesPersistedLegacyCatalogWithoutCorruptingSeed(t *testing.T
 	if err = json.Unmarshal([]byte(stored[0].Value), &published); err != nil {
 		t.Fatal(err)
 	}
-	if published.Catalog.RosterVersion != 14 || configurationHash(published) != activeConfigVersion {
+	if published.Catalog.RosterVersion != game.Catalog().RosterVersion || configurationHash(published) != activeConfigVersion {
 		t.Fatal("administration and runtime catalog differ")
 	}
 	version := stored[0].Version
@@ -263,7 +263,7 @@ func TestStartupUpgradesVersionTwoTinyPackCatalog(t *testing.T) {
 	c.Catalog.Characters = append([]game.CharacterDefinition{}, c.Catalog.Characters[:500]...)
 	c.Catalog.RosterVersion = 2
 	retireStarterGroups(&c)
-	if c.Catalog.RosterVersion != 14 || len(c.Catalog.Characters) != 562 {
+	if c.Catalog.RosterVersion != game.Catalog().RosterVersion || len(c.Catalog.Characters) != 562 {
 		t.Fatal("version two catalog did not receive Tiny pack additions")
 	}
 	if err := game.ValidateCharacterCatalog(c.Catalog); err != nil {
@@ -296,7 +296,7 @@ func TestStartupUpgradesVersionThreeRogueCatalog(t *testing.T) {
 	c.Catalog.Characters = append([]game.CharacterDefinition{}, c.Catalog.Characters[:502]...)
 	c.Catalog.RosterVersion = 3
 	retireStarterGroups(&c)
-	if c.Catalog.RosterVersion != 14 || len(c.Catalog.Characters) != 562 || c.Catalog.Characters[502].ID != "roster_burgundy_rogue" {
+	if c.Catalog.RosterVersion != game.Catalog().RosterVersion || len(c.Catalog.Characters) != 562 || c.Catalog.Characters[502].ID != "roster_burgundy_rogue" {
 		t.Fatal("existing catalog did not receive Burgundy Rogue")
 	}
 	if err := game.ValidateCharacterCatalog(c.Catalog); err != nil {

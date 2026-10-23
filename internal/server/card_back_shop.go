@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"errors"
 	"github.com/heroiclabs/nakama-common/runtime"
 	"github.com/rnikrozoft/riftbound-tactics-backend/internal/game"
-	"regexp"
 	"sort"
 )
 
@@ -37,7 +36,7 @@ func cardBackPurchase(ctx context.Context, l runtime.Logger, db *sql.DB, nk runt
 		RequestID     string `json:"request_id"`
 		ConfigVersion string `json:"config_version"`
 	}
-	if len(payload) > 4096 || json.Unmarshal([]byte(payload), &req) != nil || !regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`).MatchString(req.RequestID) {
+	if len(payload) > 4096 || json.Unmarshal([]byte(payload), &req) != nil || !storageIDPattern.MatchString(req.RequestID) {
 		return "", runtime.NewError("Invalid card back purchase", 3)
 	}
 	if req.ConfigVersion != activeConfigVersion {

@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -126,6 +126,17 @@ func TestEliminatedPlayerLeavesMatchAndCannotRejoin(t *testing.T) {
 	l.Place[0] = 6
 	s := &leagueState{league: l, presences: map[string]runtime.Presence{"dead": fakeQueuePresence{id: "dead"}, "alive": fakeQueuePresence{id: "alive"}}}
 	d := &fakeKickDispatcher{fail: true}
+	if !finalRatingPending(s, "dead") {
+		t.Fatal("eliminated result must wait for committed rating")
+	}
+	kickEliminated(s, d, nil, 999)
+	if len(d.kicked) != 0 || len(s.presences) != 2 {
+		t.Fatal("kicked before rating committed")
+	}
+	s.mmrResults = map[string]MMRResult{"dead": {Before: 1000, After: 984, Delta: -16, Rated: true}}
+	if finalRatingPending(s, "dead") {
+		t.Fatal("committed result still pending")
+	}
 	kickEliminated(s, d, nil, 1000)
 	if len(s.presences) != 2 {
 		t.Fatal("failed kick must retry rather than lose tracking")

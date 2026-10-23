@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"github.com/rnikrozoft/riftbound-tactics-backend/internal/game"

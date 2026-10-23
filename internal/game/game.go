@@ -59,14 +59,16 @@ const PreparationMS int64 = 60000
 const StepMS int64 = 2400
 
 type Card struct {
-	Veteran bool `json:"veteran"`
-	Stars   int  `json:"stars"`
-	Paid    int  `json:"paid"`
-	Token   int  `json:"token"`
-	Kind    int  `json:"kind"`
-	Price   int  `json:"price"`
+	Generated bool `json:"generated"`
+	Veteran   bool `json:"veteran"`
+	Stars     int  `json:"stars"`
+	Paid      int  `json:"paid"`
+	Token     int  `json:"token"`
+	Kind      int  `json:"kind"`
+	Price     int  `json:"price"`
 }
 type Unit struct {
+	Generated     bool `json:"generated"`
 	Stars         int  `json:"stars"`
 	Token         int  `json:"token"`
 	Kind          int  `json:"kind"`
@@ -371,6 +373,7 @@ func (r *Room) Apply(id string, a Action, now int64) error {
 		hand, units := append([]Card{}, p.Hand...), append([]Unit{}, p.Units...)
 		pending := card
 		pending.Stars, pending.Price, pending.Paid = 1, price(card), price(card)
+		pending.Generated = false
 		for !IsSupport(pending.Kind) && pending.Stars < 4 {
 			found := false
 			for j, c := range hand {
@@ -401,7 +404,7 @@ func (r *Room) Apply(id string, a Action, now int64) error {
 			pending.Stars++
 		}
 		hand = append(hand, pending)
-		if len(hand) > HandLimit {
+		if purchasedHandCount(hand) > HandLimit {
 			return errors.New("hand full")
 		}
 		cost := price(card)
@@ -427,7 +430,7 @@ func (r *Room) Apply(id string, a Action, now int64) error {
 		}
 		card := p.Hand[ci]
 		p.Hand = append(p.Hand[:ci], p.Hand[ci+1:]...)
-		p.Units = append(p.Units, Unit{Veteran: card.Veteran, Stars: starCount(card.Stars), Token: card.Token, Kind: card.Kind, Slot: a.Slot, PurchasePrice: investment(card)})
+		p.Units = append(p.Units, Unit{Generated: card.Generated, Veteran: card.Veteran, Stars: starCount(card.Stars), Token: card.Token, Kind: card.Kind, Slot: a.Slot, PurchasePrice: investment(card)})
 	case "move":
 		if ui < 0 || !validDeployment(p.Units[ui].Kind, a.Slot) {
 			return errors.New("invalid move")
@@ -443,12 +446,12 @@ func (r *Room) Apply(id string, a Action, now int64) error {
 		}
 		p.Units[ui].Slot = a.Slot
 	case "return":
-		if ui < 0 || p.Ready || p.Units[ui].Veteran || len(p.Hand) >= HandLimit {
+		if ui < 0 || p.Ready || p.Units[ui].Veteran || (!p.Units[ui].Generated && purchasedHandCount(p.Hand) >= HandLimit) {
 			return errors.New("unit cannot return")
 		}
 		unit := p.Units[ui]
 		p.Units = append(p.Units[:ui], p.Units[ui+1:]...)
-		p.Hand = append(p.Hand, Card{Veteran: unit.Veteran, Stars: starCount(unit.Stars), Paid: unit.PurchasePrice, Token: unit.Token, Kind: unit.Kind, Price: CardCost(unit.Kind)})
+		p.Hand = append(p.Hand, Card{Generated: unit.Generated, Veteran: unit.Veteran, Stars: starCount(unit.Stars), Paid: unit.PurchasePrice, Token: unit.Token, Kind: unit.Kind, Price: CardCost(unit.Kind)})
 	case "sell":
 		if ci >= 0 {
 			p.Coins++

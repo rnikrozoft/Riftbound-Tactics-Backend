@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -19,6 +19,9 @@ type leagueState struct {
 	persisted                                      int
 	mmrResults                                     map[string]MMRResult
 	nextMMRRetry                                   int64
+	battleSave                                     *asyncTask[int]
+	winSave                                        *asyncTask[struct{}]
+	mmrSaves                                       map[string]*asyncTask[MMRResult]
 }
 
 func (m *leagueMatch) MatchInit(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, params map[string]interface{}) (interface{}, int, string) {
@@ -30,6 +33,18 @@ func (m *leagueMatch) MatchInit(ctx context.Context, logger runtime.Logger, db *
 	now := time.Now().UnixMilli()
 	l, err := game.NewLeague(seats, now)
 	if err != nil {
+		return nil, 10, ""
+	}
+	ids := []string{}
+	for _, seat := range seats {
+		if !seat.Bot {
+			ids = append(ids, seat.ID)
+		}
+	}
+	if err := rememberActiveMatches(ctx, nk, ids, "MATCHMAKING"); err != nil {
+		if logger != nil {
+			logger.Error("Active match discovery: %v", err)
+		}
 		return nil, 10, ""
 	}
 	return &leagueState{league: l, presences: map[string]runtime.Presence{}, sequences: map[string]int64{}, created: now}, 10, `{"game":"riftbound","seats":6}`
@@ -119,17 +134,28 @@ func (m *leagueMatch) MatchLoop(ctx context.Context, logger runtime.Logger, db *
 	l.PlayBots(now)
 	l.Tick(now)
 	matchID, _ := ctx.Value(runtime.RUNTIME_CTX_MATCH_ID).(string)
-	settleMMR(ctx, db, logger, nk, s, matchID, now)
-	if l.Phase == "battle" && s.persisted != l.Round {
+	settleMMR(logger, nk, s, matchID, now)
+	if l.Phase == "battle" && s.persisted != l.Round && s.battleSave == nil {
 		plans := []*game.Plan{}
 		for _, r := range l.Duels {
 			plans = append(plans, r.State.Battle)
 		}
 		raw, _ := json.Marshal(plans)
-		if _, err := db.ExecContext(ctx, "INSERT INTO rift_battles(match_id,round,code,result) VALUES($1,$2,$3,$4::jsonb) ON CONFLICT DO NOTHING", matchID, l.Round, "MATCHMAKING", string(raw)); err != nil {
-			logger.Error("Persist league: %v", err)
-		} else {
-			s.persisted = l.Round
+		if s.battleSave == nil {
+			round := l.Round
+			s.battleSave = startTask(func(ctx context.Context) (int, error) {
+				return round, persistBattle(ctx, nk, matchID, round, "MATCHMAKING", raw)
+			})
+		}
+	}
+	if s.battleSave != nil {
+		if round, err, done := s.battleSave.poll(); done {
+			s.battleSave = nil
+			if err != nil {
+				logger.Error("Persist league: %v", err)
+			} else {
+				s.persisted = round
+			}
 		}
 	}
 	if l.Phase == "game_over" && !s.rewarded && now >= s.nextReward {
@@ -137,17 +163,32 @@ func (m *leagueMatch) MatchLoop(ctx context.Context, logger runtime.Logger, db *
 		i := l.Index(l.Winner)
 		if i < 0 || l.Seats[i].Bot {
 			s.rewarded = true
-		} else if _, err := db.ExecContext(ctx, "INSERT INTO rift_match_wins(match_id,winner) VALUES($1,$2) ON CONFLICT DO NOTHING", matchID, l.Winner); err != nil {
-			logger.Error("League reward: %v", err)
-		} else if err := syncWinner(ctx, db, nk, l.Winner); err != nil {
-			logger.Error("League leaderboard: %v", err)
-		} else {
-			s.rewarded = true
+		} else if s.winSave == nil {
+			winner := l.Winner
+			s.winSave = startTask(func(ctx context.Context) (struct{}, error) {
+				if err := recordWin(ctx, nk, matchID, winner); err != nil {
+					return struct{}{}, err
+				}
+				return struct{}{}, syncWinner(ctx, nk, winner)
+			})
+		}
+	}
+	if s.winSave != nil {
+		if _, err, done := s.winSave.poll(); done {
+			s.winSave = nil
+			if err != nil {
+				logger.Error("League leaderboard: %v", err)
+			} else {
+				s.rewarded = true
+			}
 		}
 	}
 	if l.Phase != "waiting" && (l.Revision != revision || now-s.lastBroadcast >= 1000) {
 		s.lastBroadcast = now
 		for id, p := range s.presences {
+			if finalRatingPending(s, id) {
+				continue
+			}
 			view := recipientState(l.View(id, now), id)
 			roster := l.Roster()
 			for i, p := range roster {
@@ -176,7 +217,7 @@ func (m *leagueMatch) MatchLoop(ctx context.Context, logger runtime.Logger, db *
 	}
 	// Send the final HP/placement snapshot before removing the losing connection.
 	kickEliminated(s, d, logger, now)
-	if !mmrPending(s) && (s.emptySince > 0 && now-s.emptySince > 60000 || len(s.presences) == 0 && now-s.created > 60000) {
+	if s.league.Phase == "game_over" && !mmrPending(s) && (s.emptySince > 0 && now-s.emptySince > 60000 || len(s.presences) == 0 && now-s.created > 60000) {
 		return nil
 	}
 	return s
@@ -189,6 +230,14 @@ func (m *leagueMatch) MatchTerminate(ctx context.Context, logger runtime.Logger,
 	return nil
 }
 func (m *leagueMatch) MatchSignal(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, d runtime.MatchDispatcher, tick int64, state interface{}, data string) (interface{}, string) {
+	if id, ok := resumeUser(data); ok {
+		s := state.(*leagueState)
+		i := s.league.Index(id)
+		if i >= 0 && !s.league.Seats[i].Bot && s.league.Players[i].HP > 0 && s.league.Phase != "game_over" {
+			return state, "available"
+		}
+		return state, "unavailable"
+	}
 	return state, "riftbound-six"
 }
 
@@ -197,7 +246,7 @@ func (m *leagueMatch) MatchSignal(ctx context.Context, logger runtime.Logger, db
 func kickEliminated(s *leagueState, d runtime.MatchDispatcher, logger runtime.Logger, now int64) {
 	for id, p := range s.presences {
 		i := s.league.Index(id)
-		if i < 0 || s.league.Players[i].HP > 0 {
+		if i < 0 || s.league.Players[i].HP > 0 || finalRatingPending(s, id) {
 			continue
 		}
 		if err := d.MatchKick([]runtime.Presence{p}); err != nil {
@@ -212,4 +261,15 @@ func kickEliminated(s *leagueState, d runtime.MatchDispatcher, logger runtime.Lo
 	if len(s.presences) == 0 && s.emptySince == 0 {
 		s.emptySince = now
 	}
+}
+
+// Keep the established protocol ordering: a terminal snapshot includes the
+// committed rating before the client leaves the match and ignores later packets.
+func finalRatingPending(s *leagueState, id string) bool {
+	i := s.league.Index(id)
+	if i < 0 || s.league.Seats[i].Bot || s.league.Place[i] == 0 {
+		return false
+	}
+	_, saved := s.mmrResults[id]
+	return !saved
 }

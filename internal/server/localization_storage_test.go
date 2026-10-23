@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 func TestLocalizationPublicationAndConditionalDownload(t *testing.T) {
 	ctx := queueContext("locale-user")
 	nk := inventoryFake()
-	doc, err := localization.ReadWorkbook("data/localization.xlsx")
+	doc, err := localization.ReadWorkbook("../../data/localization.xlsx")
 	if err != nil {
 		t.Fatal(err)
 	}

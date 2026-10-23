@@ -1,4 +1,5 @@
 name: riftbound
+shutdown_grace_sec: 15
 logger:
   level: INFO
 socket:

@@ -45,23 +45,32 @@ def authenticate(device):
 def main():
     device = 'rift-storage-test-' + uuid.uuid4().hex
     a, b = authenticate(device), authenticate(device + '-b')
+    for collection, key in [('riftbound_ratings', 'account'), ('riftbound_wins', 'account'), ('riftbound_player', 'collection_decks'), ('riftbound_rating_results', 'forged-match'), ('riftbound_purchases', 'forged-request')]:
+        reject(lambda collection=collection, key=key: request('/v2/storage', {'objects': [{'collection': collection, 'key': key, 'value': '{"mmr":99999}', 'version': '*', 'permission_read': 1, 'permission_write': 1}]}, a, method='PUT'), 'client cannot seed ' + collection)
     state = rpc('player_bootstrap', {}, a)
     second = rpc('player_bootstrap', {}, b)
     uid = state['user_id']; config = state['config']; version = state['config_version']
     check(uid != second['user_id'], 'distinct accounts')
-    check(config['economy']['all_unlocked'], 'temporary free access stays enabled')
-    check(len(state['profile']['owned_characters']) == 40, 'only starter collection permanently owned')
+    if config['economy']['free_character_cards']:
+        enabled = {c['character_id'] for c in config['catalog']['characters'] if c['enabled']}
+        check(enabled.issubset(set(state['profile']['owned_characters'])), 'current free-card policy granted')
     check(state['wallet']['coins'] == 0, 'wallet initializes to zero')
     cached = rpc('player_bootstrap', {'cached_config_version': version}, a)
     check('config' not in cached, 'unchanged catalog cache avoids full download')
     check(cached['profile_version'] == state['profile_version'], 'bootstrap does not overwrite player data')
-    owned = set(state['profile']['owned_characters'])
-    candidates = [c['character_id'] for c in config['catalog']['characters'] if c['enabled'] and c['character_id'] not in owned]
-    character = candidates[0]; price = config['economy']['prices'][character]
-    purchase = {'character_id': character, 'request_id': uuid.uuid4().hex, 'config_version': version, 'price': 0, 'user_id': second['user_id']}
-    reject(lambda: rpc('character_purchase', purchase, a), 'insufficient funds')
+    # Exercise a paid storefront without changing the active economy.
+    if not config['economy']['free_card_backs']:
+        ownership_key, item_key, purchase_rpc = 'owned_card_backs', 'card_back_id', 'card_back_purchase'
+        candidates = [(c['id'], c['price']) for c in config['card_backs'] if c['id'] not in state['profile'][ownership_key] and c['price'] > 0]
+    else:
+        ownership_key, item_key, purchase_rpc = 'owned_characters', 'character_id', 'character_purchase'
+        candidates = [(c['character_id'], config['economy']['prices'][c['character_id']]) for c in config['catalog']['characters'] if c['enabled'] and c['character_id'] not in state['profile'][ownership_key]]
+    check(len(candidates) >= 2, 'two paid test items available')
+    character, price = candidates[0]
+    purchase = {item_key: character, 'request_id': uuid.uuid4().hex, 'config_version': version, 'price': 0, 'user_id': second['user_id']}
+    reject(lambda: rpc(purchase_rpc, purchase, a), 'insufficient funds')
     unchanged = rpc('player_bootstrap', {'cached_config_version': version}, a)
-    check(character not in unchanged['profile']['owned_characters'] and unchanged['wallet']['coins'] == 0, 'failed purchase rolls back')
+    check(character not in unchanged['profile'][ownership_key] and unchanged['wallet']['coins'] == 0, 'failed purchase rolls back')
     reject(lambda: rpc('admin_player_grant', {'user_id': uid, 'coins': 1000, 'request_id': uuid.uuid4().hex}, a), 'player cannot grant currency')
     reject(lambda: rpc('admin_config_get', {}, a), 'player cannot access config administration')
     grant = {'user_id': uid, 'coins': price, 'request_id': uuid.uuid4().hex}
@@ -69,13 +78,13 @@ def main():
     funded = rpc('player_bootstrap', {'cached_config_version': version}, a)
     check(funded['wallet']['coins'] == price, 'grant receipt prevents duplicate credit')
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: rpc('character_purchase', purchase, a), range(2)))
+        results = list(pool.map(lambda _: rpc(purchase_rpc, purchase, a), range(2)))
     after = rpc('player_bootstrap', {'cached_config_version': version}, a)
     check(after['wallet']['coins'] == 0, 'retry/concurrent purchase charges once at server price')
-    check(after['profile']['owned_characters'].count(character) == 1, 'ownership granted once')
-    check(character not in rpc('player_bootstrap', {}, b)['profile']['owned_characters'], 'other account unaffected')
-    wrong = dict(purchase, character_id=candidates[1])
-    reject(lambda: rpc('character_purchase', wrong, a), 'request ID cannot change item')
+    check(after['profile'][ownership_key].count(character) == 1, 'ownership granted once')
+    check(character not in rpc('player_bootstrap', {}, b)['profile'][ownership_key], 'other account unaffected')
+    wrong = dict(purchase); wrong[item_key] = candidates[1][0]
+    reject(lambda: rpc(purchase_rpc, wrong, a), 'request ID cannot change item')
     deck = dict(after['profile']['decks'][0]); deck['name'] = 'Saved on server'
     save = {'decks': [deck], 'selected_deck_id': deck['id'], 'profile_version': after['profile_version'], 'config_version': version}
     saved = rpc('player_decks_save', save, a)
@@ -92,7 +101,7 @@ def main():
     a = authenticate(device)
     reloaded = rpc('player_bootstrap', {}, a)
     check(reloaded['user_id'] == uid and reloaded['profile']['decks'][0]['name'] == 'Saved on server', 'cross-login persisted decks')
-    check(character in reloaded['profile']['owned_characters'] and reloaded['wallet']['coins'] == 0, 'cross-login persisted ownership/wallet')
+    check(character in reloaded['profile'][ownership_key] and reloaded['wallet']['coins'] == 0, 'cross-login persisted ownership/wallet')
     published = rpc('admin_config_get', {}, admin=True)
     staged = rpc('admin_config_publish', {'storage_version': published['storage_version'], 'economy': published['config']['economy']}, admin=True)
     check(staged['restart_required'] and staged['config_version'] == version, 'validated same-config publish, immutable active revision')

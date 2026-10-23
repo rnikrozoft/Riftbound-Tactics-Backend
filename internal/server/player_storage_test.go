@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
 	"github.com/rnikrozoft/riftbound-tactics-backend/internal/game"
+	"google.golang.org/protobuf/proto"
 )
 
 type inventoryNakama struct {
@@ -36,8 +37,7 @@ func (n *inventoryNakama) StorageRead(ctx context.Context, reads []*runtime.Stor
 	out := []*api.StorageObject{}
 	for _, r := range reads {
 		if o := n.objects[objectKey(r.Collection, r.Key, r.UserID)]; o != nil {
-			copy := *o
-			out = append(out, &copy)
+			out = append(out, proto.Clone(o).(*api.StorageObject))
 		}
 	}
 	return out, nil

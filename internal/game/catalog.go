@@ -15,6 +15,8 @@ import (
 	"strings"
 )
 
+var characterIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+
 type CharacterStats struct {
 	Stars     int `json:"stars"`
 	HP        int `json:"hp"`
@@ -135,7 +137,7 @@ func ValidateCharacterCatalog(c CharacterCatalog) error {
 	counts := map[[2]int]int{}
 	sceneGroups := map[string]int{}
 	for kind, d := range c.Characters {
-		if d.Kind != kind || !regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`).MatchString(d.ID) || ids[d.ID] || strings.TrimSpace(d.Name) == "" || characterNames[d.Name] {
+		if d.Kind != kind || !characterIDPattern.MatchString(d.ID) || ids[d.ID] || strings.TrimSpace(d.Name) == "" || characterNames[d.Name] {
 			return fmt.Errorf("invalid or duplicate character identity at kind %d", kind)
 		}
 		ids[d.ID], characterNames[d.Name] = true, true
@@ -456,7 +458,7 @@ func LoadCharacterWorkbook(path string) (CharacterCatalog, error) {
 		if err = json.Unmarshal(raw, &d); err != nil {
 			return c, err
 		}
-		if !regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`).MatchString(d.ID) || ids[d.ID] {
+		if !characterIDPattern.MatchString(d.ID) || ids[d.ID] {
 			return c, fmt.Errorf("Characters row %d: invalid or duplicate character_id", row.row)
 		}
 		if _, exists := kinds[d.Kind]; exists {

@@ -12,11 +12,11 @@ docker compose logs -f nakama
 
 Game endpoint: http://127.0.0.1:7350. Local Nakama console: http://127.0.0.1:7351 (admin / riftbound-debug-console). Development server key: riftbound-debug-key. Configuration is for local development; replace credentials and configure TLS before public deployment.
 
-Stop while preserving database: `docker compose down`. PostgreSQL uses the named `postgres_data` volume. Tables `rift_rooms` and `rift_battles` store room lookup and complete computed battle results.
+Stop while preserving database: `docker compose down`. PostgreSQL uses the named `postgres_data` volume. Private Nakama Storage collections hold room lookup, round archives, ratings and score receipts; no custom SQL tables are used. See [API audit](docs/nakama-api-audit.md).
 
 ## Play with two clients
 
-Run two instances of the Godot .NET client. CREATE assigns player A and a six-digit code. Enter that code and JOIN in the second instance to become B. Each game process authenticates with a fresh random device ID and creates a new Nakama user; it never reuses a saved session.
+Run two instances of the Godot .NET client. CREATE assigns player A and a six-digit code. Enter that code and JOIN in the second instance to become B. The normal client reserves a persisted account slot per process and reuses that device identity on later launches. Independent debug/test connections use fresh device IDs. Reconnect reuses the current authenticated session.
 
 Preparation begins once both players join. Each player gets three randomized shop offers at shop level 2 (up to five at higher levels), up to ten hand cards and six deployment slots. The countdown is 60 seconds. Both players pressing BATTLE starts early; otherwise the server starts at the deadline. Ready players cannot edit their formations. Empty formations are permitted and resolve as a draw or forfeit.
 
@@ -66,3 +66,10 @@ Upgrading a deployed character automatically removes it from its field slot and 
 ## Character catalog
 
 Definitions are loaded from `data/characters.json` at Nakama startup. There are seven selectable character groups, including Orc, Demon and Blood Monster, and a separate Neutral collection. Select three characters; each contributes ten card kinds, plus ten chosen Neutral kinds, for forty distinct slots. Validate with `go run ./cmd/catalogtool`; deploy with `docker compose up -d --build nakama`. The authenticated `character_catalog` RPC supplies group names, definitions, assets and stats at Guest login. See [catalog workflow](docs/character-catalog.md). Existing Excel files are legacy templates and no longer control runtime data.
+
+
+## Source layout
+
+`main.go` exports Nakama's plugin entry point. `internal/server/` contains registration, RPC adapters, room/league handlers and persistence; `internal/game/` owns gameplay rules and combat; `internal/localization/` owns workbook parsing. Server adapters are split into configuration, administration, player storage, shops, room directory, match handling and score storage files. Tests live beside their package. Tools and source data remain in `cmd/`, `tools/` and `data/`.
+
+The persistence change intentionally does not import old SQL data. See the [feature-by-feature Nakama audit](docs/nakama-api-audit.md), including the current single-node deployment boundary.
