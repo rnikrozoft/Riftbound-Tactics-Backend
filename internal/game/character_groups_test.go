@@ -26,17 +26,17 @@ func TestRuntimeCharacterGroups(t *testing.T) {
 			neutral++
 		}
 	}
-	if neutral != 20 {
-		t.Fatal("original Neutral options changed")
+	if neutral != 58 {
+		t.Fatal("retired Neutral options still enabled")
 	}
-	if IsHeroGroup(NeutralGroup) || len(HeroGroups()) != len(c.GroupNames)-1 {
+	if IsHeroGroup(NeutralGroup) || len(HeroGroups()) != 4 {
 		t.Fatal("selectable character groups are wrong")
 	}
-	deck := deckForGroups("Monster expedition", []int{5, 6, 7})
+	deck := deckForGroups("Monster expedition", []int{45, 46, 47})
 	if err = ValidateDeck(deck); err != nil {
 		t.Fatal(err)
 	}
-	if len(deck.Cards) != 40 {
+	if len(deck.Cards) != 30 {
 		t.Fatal("new characters must fill a complete deck")
 	}
 	r := New("monsters", "player", 42)
@@ -60,9 +60,9 @@ func TestRuntimeCharacterGroups(t *testing.T) {
 		t.Fatal("Neutral must not be selectable as a character")
 	}
 	deck = DefaultDeck()
-	deck.Cards[0].Kind = 60
+	deck.Cards[0].Kind = 62
 	if ValidateDeck(deck) == nil {
-		t.Fatal("Orc cards cannot be used without selecting Orc")
+		t.Fatal("Blood Monster cards cannot be used without selecting Orc")
 	}
 }
 
@@ -72,7 +72,7 @@ func TestJSONCatalogRejectsIncompleteNewCharacterGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range c.Characters {
-		if c.Characters[i].Group == 5 && c.Characters[i].Cost == 2 {
+		if c.Characters[i].Group == 45 && c.Characters[i].Cost == 2 {
 			c.Characters[i].Enabled = false
 		}
 	}

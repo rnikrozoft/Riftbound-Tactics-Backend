@@ -105,12 +105,13 @@ type fighter struct {
 	rules                                                                                                            *CombatRules
 }
 type fight struct {
-	r     *Room
-	plan  *Plan
-	units []*fighter
-	step  int
-	event *CombatEvent
-	block map[string]bool
+	supportStarted bool
+	r              *Room
+	plan           *Plan
+	units          []*fighter
+	step           int
+	event          *CombatEvent
+	block          map[string]bool
 }
 
 func scaled(v, stars int) int {
@@ -120,7 +121,7 @@ func percent(v, p int) int { return (v*p + 50) / 100 }
 func (f *fight) alive(side int) []*fighter {
 	var out []*fighter
 	for _, u := range f.units {
-		if u.side == side && u.hp > 0 {
+		if u.side == side && u.hp > 0 && !IsSupport(u.unit.Kind) {
 			out = append(out, u)
 		}
 	}
@@ -148,7 +149,7 @@ func (f *fight) status(u *fighter, status string, stars int) {
 	}
 	switch status {
 	case "fire":
-		u.fire = scaled(3, stars)
+		u.fire = 2
 	case "stun":
 		if !u.grace {
 			u.stun = true
@@ -163,18 +164,29 @@ func (f *fight) damage(source, u *fighter, n, pierce, frame int, kind string) in
 		return 0
 	}
 	before := u.hp
-	if kind != "poison" && kind != "execute" && u.rules != nil && u.rules.BlockFirst && !u.blockUsed {
+	if kind != "poison" && kind != "fire" && kind != "execute" && u.rules != nil && u.rules.BlockFirst && !u.blockUsed {
 		if _, ok := f.block[u.unit.ID]; !ok {
 			f.block[u.unit.ID] = true
 			u.blockUsed = true
 		}
 	}
-	if kind != "poison" && kind != "execute" && f.block[u.unit.ID] {
+	if kind != "poison" && kind != "fire" && kind != "execute" && f.block[u.unit.ID] {
 		n = (n + 1) / 2
+	}
+	if source.side != u.side && !IsSupport(source.unit.Kind) && (kind == "damage" || kind == "counter" || kind == "splash") && f.support(source.side, "banner") != nil {
+		n = percent(n, 110)
 	}
 	direct := n * pierce / 100
 	rest := n - direct
 	absorbed := min(u.armor, rest)
+	if direct+rest-absorbed >= u.hp {
+		if ward := f.support(u.side, "ward"); ward != nil {
+			f.consume(ward, frame)
+			u.armor += Character(ward.unit.Kind).SupportValue
+			f.record(frame, ward, u, 0, "ward")
+			return 0
+		}
+	}
 	u.armor -= absorbed
 	u.hp = max(0, u.hp-direct-(rest-absorbed))
 	lost := before - u.hp
@@ -259,10 +271,24 @@ func (f *fight) skeletonKind() int {
 	}
 	return -1
 }
+func attackChoices(rules *CombatRules) []AttackRule {
+	choices := []AttackRule{}
+	seen := map[string]bool{}
+	for _, rule := range rules.Actions {
+		if !seen[rule.Animation] {
+			choices = append(choices, rule)
+			seen[rule.Animation] = true
+		}
+	}
+	return choices
+}
 func (f *fight) action(a, target *fighter, at int64) {
 	rule := AttackRule{Animation: "attack01", Mode: "melee", Hits: 1, Power: 100, Frames: 8, HitFrames: []int{2}}
 	if a.rules != nil {
-		rule = a.rules.Actions[a.turn%len(a.rules.Actions)]
+		choices := attackChoices(a.rules)
+		if len(choices) > 0 {
+			rule = choices[f.r.rng.Intn(len(choices))]
+		}
 		if a.turn == 0 && a.rules.First != nil {
 			rule = *a.rules.First
 		}
@@ -274,6 +300,7 @@ func (f *fight) action(a, target *fighter, at int64) {
 	f.block = map[string]bool{}
 	event := CombatEvent{Index: len(f.plan.Events), Attacker: a.unit.ID, Target: target.unit.ID, AtMS: at, Animation: rule.Animation, Mode: rule.Mode}
 	f.event = &event
+	f.startSupports()
 	if a.stun {
 		a.stun = false
 		a.grace = true
@@ -315,7 +342,7 @@ func (f *fight) action(a, target *fighter, at int64) {
 	case "revive":
 		var dead *fighter
 		for _, u := range f.units {
-			if u.side == a.side && u.hp == 0 && !u.unit.Summoned && !u.revived && (dead == nil || u.unit.MaxHP > dead.unit.MaxHP) {
+			if u.side == a.side && u.hp == 0 && !IsSupport(u.unit.Kind) && !u.unit.Summoned && !u.revived && (dead == nil || u.unit.MaxHP > dead.unit.MaxHP) {
 				dead = u
 			}
 		}
@@ -444,16 +471,20 @@ func (f *fight) action(a, target *fighter, at int64) {
 				}
 			}
 		}
-		if target.fire > 0 {
-			total += target.fire
-			target.fire = 0
-		}
+
 		extra := f.splash(target, rule.Splash)
 		if a.unit.Stars < rule.MinStars {
 			extra = nil
 		}
 		stolen := 0
 		hits := max(1, rule.Hits)
+		if hits > 1 {
+			if seal := f.support(target.side, "seal"); seal != nil {
+				f.consume(seal, 0)
+				total = percent((total+hits-1)/hits, supportPower(seal, 100))
+				hits = 1
+			}
+		}
 		lastFrame := 2
 		for h := 0; h < hits && target.hp > 0; h++ {
 			frame := 2 + h*3
@@ -483,13 +514,11 @@ func (f *fight) action(a, target *fighter, at int64) {
 			if avoid {
 				a.killUsed = true
 			} else {
-				if a.fire > 0 {
-					counter += a.fire
-					a.fire = 0
-				}
+
 				f.damage(target, a, counter, 0, lastFrame, "counter")
 			}
 		}
+		f.afterAttack(a, target, rule.Mode, event.Damage, lastFrame)
 		f.status(target, rule.Status, a.unit.Stars)
 		if rule.AntiHeal && target.hp > 0 {
 			target.antiHeal = true
@@ -532,6 +561,13 @@ end:
 	f.plan.Events = append(f.plan.Events, event)
 }
 func (f *fight) endAction(a *fighter, frame int) {
+	defer f.endSupports(frame)
+
+	for _, burning := range f.units {
+		if burning.hp > 0 && burning.fire > 0 {
+			f.damage(burning, burning, 2, 100, frame, "fire")
+		}
+	}
 	if a.hp > 0 && a.poisonTicks > 0 {
 		f.damage(a, a, a.poison, 100, frame, "poison")
 		a.poisonTicks--
@@ -545,7 +581,7 @@ func (r *Room) startEffects(now int64) *Plan {
 	modern := false
 	for _, p := range r.State.Players {
 		for _, u := range p.Units {
-			if Character(u.Kind).Combat != nil {
+			if Character(u.Kind).Combat != nil || IsSupport(u.Kind) {
 				modern = true
 			}
 		}
@@ -559,21 +595,16 @@ func (r *Room) startEffects(now int64) *Plan {
 			u := &p.Units[i]
 			u.Veteran = true
 			s := StatsFor(u.Kind, u.Stars)
-			c := CombatUnit{Stars: starCount(u.Stars), ID: fmt.Sprintf("%s:%d", p.Team, u.Token), Team: p.Team, Token: u.Token, Kind: u.Kind, Slot: u.Slot, MaxHP: s.HP, InitialHP: s.HP, Attack: s.HP, Armor: s.Armor, Speed: 10}
+			c := CombatUnit{Stars: starCount(u.Stars), ID: fmt.Sprintf("%s:%d", p.Team, u.Token), Team: p.Team, Token: u.Token, Kind: u.Kind, Slot: u.Slot, MaxHP: s.HP, InitialHP: s.HP, Attack: s.Attack, Armor: s.Armor, Speed: 10}
 			f.units = append(f.units, &fighter{unit: c, hp: c.MaxHP, armor: c.Armor, side: side, rules: Character(u.Kind).Combat})
 			f.plan.Units = append(f.plan.Units, c)
 		}
 	}
 	at := f.plan.StartMS
-	side := 0
+	side := r.openingSide(f.plan.Units)
+	cursors := [2]int{}
 	for f.step = 0; f.step < 512 && len(f.alive(0)) > 0 && len(f.alive(1)) > 0; f.step++ {
-		choices := []*fighter{}
-		for _, u := range f.alive(side) {
-			if u.canAct <= f.step {
-				choices = append(choices, u)
-			}
-		}
-		if a := f.pick(choices); a != nil {
+		if a := f.nextActor(side, &cursors[side]); a != nil {
 			target := f.pick(f.alive(1 - side))
 			f.action(a, target, at)
 			at += combatPresentationMS(f.plan.Events[len(f.plan.Events)-1], a.rules)

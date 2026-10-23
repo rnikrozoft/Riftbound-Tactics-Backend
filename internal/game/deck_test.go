@@ -11,8 +11,8 @@ func TestDefaultDeckAndCatalog(t *testing.T) {
 	if err := ValidateDeck(d); err != nil {
 		t.Fatal(err)
 	}
-	if len(d.Cards) != 40 {
-		t.Fatal("forty distinct slots")
+	if len(d.Cards) != 30 {
+		t.Fatal("thirty distinct slots")
 	}
 	counts := map[[2]int]int{}
 	for k := 0; k < CardKinds; k++ {
@@ -23,6 +23,11 @@ func TestDefaultDeckAndCatalog(t *testing.T) {
 			want := 2
 			if g == 4 {
 				want = 4
+				for _, k := range SupportKinds() {
+					if CardCost(k) == cost {
+						want++
+					}
+				}
 			}
 			if counts[[2]int{g, cost}] != want {
 				t.Fatal("catalog grouping", g, cost)
@@ -31,7 +36,7 @@ func TestDefaultDeckAndCatalog(t *testing.T) {
 	}
 }
 func TestInvalidDecksRejected(t *testing.T) {
-	cases := []func(*Deck){func(d *Deck) { d.Cards = d.Cards[:39] }, func(d *Deck) { d.Heroes[1] = d.Heroes[0] }, func(d *Deck) { d.Cards[0].Kind = d.Cards[1].Kind }, func(d *Deck) { d.Cards[0].Copies = 0 }, func(d *Deck) { d.Cards[0].Copies = 5 }, func(d *Deck) { d.Cards[0].Kind = 60 }, func(d *Deck) { d.Cards[0].Kind = 30 }, func(d *Deck) { d.Name = "" }, func(d *Deck) { d.Name = strings.Repeat("x", 41) }, func(d *Deck) { d.Cards[0].Kind = 42; d.Cards[1].Kind = 43 }}
+	cases := []func(*Deck){func(d *Deck) { d.Cards = d.Cards[:29] }, func(d *Deck) { d.Heroes[1] = d.Heroes[0] }, func(d *Deck) { d.Cards[0].Kind = d.Cards[1].Kind }, func(d *Deck) { d.Cards[0].Copies = 0 }, func(d *Deck) { d.Cards[0].Copies = 9 }, func(d *Deck) { d.Cards[0].Kind = 60 }, func(d *Deck) { d.Cards[0].Kind = 30 }, func(d *Deck) { d.Name = "" }, func(d *Deck) { d.Name = strings.Repeat("x", 41) }, func(d *Deck) { d.Cards[0].Kind = 42; d.Cards[1].Kind = 43 }}
 	for i, change := range cases {
 		d := DefaultDeck()
 		change(&d)
@@ -44,16 +49,18 @@ func TestSelectedDeckPoolAndCopyExhaustion(t *testing.T) {
 	r := New("123456", "a", 42)
 	d := DefaultDeck()
 	d.Name = "Guardian solo copies"
-	d.Heroes[0] = 3
+	d.Heroes[0] = 48
 	cards := []DeckCard{}
 	for _, c := range d.Cards {
-		if CardGroup(c.Kind) != 0 {
+		if CardGroup(c.Kind) != 45 {
 			c.Copies = 1
 			cards = append(cards, c)
 		}
 	}
-	for k := 30; k < 40; k++ {
-		cards = append(cards, DeckCard{Kind: k, Copies: 1})
+	for _, c := range Catalog().Characters {
+		if c.Enabled && c.Group == 48 && c.ID != "roster_necromancer" {
+			cards = append(cards, DeckCard{Kind: c.Kind, Copies: 1})
+		}
 	}
 	d.Cards = cards
 	if err := r.SetDeck("a", d); err != nil {
@@ -77,7 +84,9 @@ func TestSelectedDeckPoolAndCopyExhaustion(t *testing.T) {
 	}
 	for k, n := range p.RemainingCopies {
 		if !seen[k] && n != 0 {
-			t.Fatal("unselected kind stocked")
+			if !IsSupport(k) {
+				t.Fatal("unselected kind stocked")
+			}
 		}
 	}
 	r.rollShop(p)
@@ -89,7 +98,7 @@ func TestSelectedDeckPoolAndCopyExhaustion(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		r.rollShop(p)
 		for _, c := range p.Offers {
-			if !seen[c.Kind] || c.Kind == card.Kind {
+			if (!seen[c.Kind] && !IsSupport(c.Kind)) || c.Kind == card.Kind {
 				t.Fatal("unselected or exhausted card offered")
 			}
 		}

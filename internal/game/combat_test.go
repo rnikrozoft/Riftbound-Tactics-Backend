@@ -98,8 +98,8 @@ func TestCombatFireStunGraceAndPoison(t *testing.T) {
 	a.hp = 10
 	b.fire = 3
 	f.action(a, b, 0)
-	if b.hp != 87 || b.fire != 0 {
-		t.Fatal("fire must apply and expire once")
+	if b.hp != 88 || b.fire != 3 {
+		t.Fatal("fire must tick for 2 and persist")
 	}
 	b.stun = true
 	f.action(b, a, 1)
@@ -198,7 +198,7 @@ func TestCombatEveryShippedProfileIsValidAndReplays(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, d := range Catalog().Characters {
-		if d.Combat == nil {
+		if d.Combat == nil && !IsSupport(d.Kind) {
 			t.Fatal("missing rules", d.ID)
 		}
 	}
@@ -356,14 +356,17 @@ func TestCorrectedCharacterAttackPlayback(t *testing.T) {
 	} {
 		t.Run(tc.slug+"/"+tc.animation, func(t *testing.T) {
 			rules := bySlug(tc.slug).Combat
-			for index, rule := range rules.Actions {
+			for _, rule := range rules.Actions {
 				if rule.Animation != tc.animation {
 					continue
 				}
-				f := fixtureFight(rules, basic("melee"))
+				selected := *rules
+				selected.Actions = []AttackRule{rule}
+				selected.First = nil
+				f := fixtureFight(&selected, basic("melee"))
 				a, b := f.units[0], f.units[1]
 				a.hp = 30
-				a.turn = index
+				a.turn = 1
 				f.action(a, b, 0)
 				event := f.plan.Events[0]
 				frames := []int{}
@@ -391,5 +394,88 @@ func TestCorrectedCharacterAttackPlayback(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestReviewedMultiHitAttacks(t *testing.T) {
+	for _, spec := range []struct {
+		slug, animation string
+		hits            int
+	}{
+		{"demoness_a", "attack03", 2}, {"knight_templar", "attack03", 2}, {"orc_rider", "attack03", 2}, {"werebear", "attack02", 2}, {"werewolf", "attack02", 3},
+	} {
+		for _, d := range Catalog().Characters {
+			if !strings.HasSuffix(d.ScenePath, "/"+spec.slug+".tscn") {
+				continue
+			}
+			for _, a := range d.Combat.Actions {
+				if a.Animation == spec.animation && (a.Hits != spec.hits || len(a.HitFrames) != spec.hits) {
+					t.Fatalf("%s %s: inconsistent hits", d.ID, spec.animation)
+				}
+			}
+			if d.Combat.Finisher == spec.animation && (d.Combat.FinisherHits != spec.hits || len(d.Combat.FinisherHitFrames) != spec.hits) {
+				t.Fatalf("%s: inconsistent finisher", d.ID)
+			}
+		}
+	}
+}
+
+func TestRandomAttacksEqualUniqueAnimations(t *testing.T) {
+	rules := basic("ranged")
+	for _, animation := range []string{"attack02", "attack03", "attack02"} {
+		rule := rules.Actions[0]
+		rule.Animation = animation
+		rules.Actions = append(rules.Actions, rule)
+	}
+	if len(attackChoices(rules)) != 3 {
+		t.Fatal("Repeated cycle entries must not weight an attack")
+	}
+	f := fixtureFight(rules, basic("ranged"))
+	counts := map[string]int{}
+	repeated := false
+	previous := ""
+	for i := 0; i < 6000; i++ {
+		f.units[0].hp = 100
+		f.units[1].hp = 100
+		f.action(f.units[0], f.units[1], int64(i))
+		animation := f.plan.Events[len(f.plan.Events)-1].Animation
+		counts[animation]++
+		if animation == previous {
+			repeated = true
+		}
+		previous = animation
+	}
+	for _, animation := range []string{"attack01", "attack02", "attack03"} {
+		if counts[animation] < 1800 || counts[animation] > 2200 {
+			t.Fatalf("Unequal random selection: %v", counts)
+		}
+	}
+	if !repeated {
+		t.Fatal("Attacks still follow a cycle")
+	}
+}
+
+func TestBurnTicksEveryActionIgnoringArmorAndStars(t *testing.T) {
+	f := fixtureFight(basic("ranged"), basic("ranged"))
+	a, b := f.units[0], f.units[1]
+	f.status(a, "fire", 4)
+	f.status(b, "fire", 1)
+	a.armor = 100
+	b.armor = 100
+	f.action(a, b, 0)
+	if a.hp != 98 || b.hp != 98 || a.armor != 100 || b.armor != 0 {
+		t.Fatalf("First turn burn: a=%+v b=%+v", a, b)
+	}
+	// Skip the next actor's action: fire still ticks on both sides.
+	b.stun = true
+	f.action(b, a, 1)
+	if a.hp != 96 || b.hp != 96 || a.fire != 2 || b.fire != 2 {
+		t.Fatal("Both sides must burn even on a stunned turn")
+	}
+	b.hp = 1
+	b.stun = true
+	f.action(b, a, 2)
+	if b.hp != 0 {
+		t.Fatal("Burn must be lethal")
 	}
 }

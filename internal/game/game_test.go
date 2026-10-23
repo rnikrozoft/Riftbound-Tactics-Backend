@@ -21,7 +21,18 @@ func action(t *testing.T, r *Room, id, kind string, token, slot int) {
 	}
 }
 func deploy(t *testing.T, r *Room, id string, slot int) int {
-	token := r.Player(id).Offers[0].Token
+	token := 0
+	for _, c := range r.Player(id).Offers {
+		if !IsSupport(c.Kind) {
+			token = c.Token
+			break
+		}
+	}
+	if token == 0 {
+		r.serial++
+		token = r.serial
+		r.Player(id).Offers = append(r.Player(id).Offers, Card{Token: token, Kind: DefaultDeck().Cards[0].Kind, Price: 0})
+	}
 	action(t, r, id, "buy", token, 0)
 	action(t, r, id, "deploy", token, slot)
 	return token
@@ -97,7 +108,7 @@ func TestPlanDeterministicAndValid(t *testing.T) {
 		for i := 0; i < 4; i++ {
 			for _, id := range []string{"a", "b"} {
 				r.serial++
-				r.Player(id).Offers = []Card{{Token: r.serial, Kind: i, Price: 2}}
+				r.Player(id).Offers = []Card{{Token: r.serial, Kind: DefaultDeck().Cards[i].Kind, Price: 2}}
 				deploy(t, r, id, i)
 			}
 		}
@@ -113,7 +124,7 @@ func TestPlanDeterministicAndValid(t *testing.T) {
 		hp[u.ID] = u.MaxHP
 		team[u.ID] = u.Team
 	}
-	previous := "B"
+	previous := ""
 	for i, e := range a.Events {
 		if hp[e.Attacker] <= 0 || hp[e.Target] <= 0 || team[e.Attacker] == team[e.Target] {
 			t.Fatal("invalid attacker/target")
@@ -136,7 +147,7 @@ func TestLimitsAndReplay(t *testing.T) {
 	r := setup(t)
 	p := r.Player("a")
 	p.Coins = 100 // Capacity checks are independent of affordability.
-	p.RemainingCopies[0] = 20
+	p.RemainingCopies[460] = 20
 	seen := map[int]bool{}
 	for _, c := range p.Offers {
 		if seen[c.Token] || c.Kind < 0 || c.Kind >= CardKinds {
@@ -155,20 +166,26 @@ func TestLimitsAndReplay(t *testing.T) {
 	if err := r.Apply("a", Action{Type: "deploy", Token: token, Slot: 0, Round: 0}, 1100); err == nil {
 		t.Fatal("stale round")
 	}
+	nextKind := 10
 	for len(p.Hand) < 10 {
 		if len(p.Offers) == 0 {
 			r.serial++
-			p.Offers = append(p.Offers, Card{Token: r.serial, Kind: 6 + len(p.Hand)})
+			p.Offers = append(p.Offers, Card{Token: r.serial, Kind: DefaultDeck().Cards[nextKind].Kind})
+			nextKind++
 		}
 		action(t, r, "a", "buy", p.Offers[0].Token, 0)
 	}
 	r.serial++
-	p.Offers = append(p.Offers, Card{Token: r.serial, Kind: 6 + len(p.Hand)})
+	p.Offers = append(p.Offers, Card{Token: r.serial, Kind: DefaultDeck().Cards[nextKind].Kind})
 	if err := r.Apply("a", Action{Type: "buy", Token: r.serial, Round: 1}, 1100); err == nil {
 		t.Fatal("hand overflow")
 	}
 	for i := 0; i < 6; i++ {
-		action(t, r, "a", "deploy", p.Hand[0].Token, i)
+		index := 0
+		for IsSupport(p.Hand[index].Kind) {
+			index++
+		}
+		action(t, r, "a", "deploy", p.Hand[index].Token, i)
 	}
 	if err := r.Apply("a", Action{Type: "deploy", Token: p.Hand[0].Token, Slot: 0, Round: 1}, 1100); err == nil {
 		t.Fatal("field overflow")
@@ -194,16 +211,16 @@ func TestEconomyAffordabilityAndRefund(t *testing.T) {
 	action(t, r, "a", "return", token, 0)
 	action(t, r, "a", "deploy", token, 0)
 	action(t, r, "a", "sell", token, 0)
-	if p.Coins != 17 {
-		t.Fatal("purchase price 5 must refund floor(5/2)=2")
+	if p.Coins != 16 {
+		t.Fatal("sale must refund one coin")
 	}
-	if r.Apply("a", Action{Type: "sell", Token: token, Round: 1}, 1100) == nil || p.Coins != 17 {
+	if r.Apply("a", Action{Type: "sell", Token: token, Round: 1}, 1100) == nil || p.Coins != 16 {
 		t.Fatal("double refund")
 	}
 	token = p.Offers[0].Token
 	action(t, r, "a", "buy", token, 0)
 	action(t, r, "a", "sell", token, 0)
-	if p.Coins != 16 {
+	if p.Coins != 15 {
 		t.Fatal("hand refund")
 	}
 }
@@ -334,9 +351,9 @@ func TestShopPoolEligibilityUniqueAndExhausted(t *testing.T) {
 	for i := range p.RemainingCopies {
 		p.RemainingCopies[i] = 0
 	}
-	p.RemainingCopies[0] = 1
+	p.RemainingCopies[460] = 1
 	r.rollShop(p)
-	if len(p.Offers) != 1 || p.Offers[0].Kind != 0 {
+	if len(p.Offers) != 1 || p.Offers[0].Kind != 460 {
 		t.Fatal("exhausted pool draw")
 	}
 	token := p.Offers[0].Token
@@ -490,8 +507,10 @@ func TestWinningPlayerBUsesOwnShopAndDefaultStar(t *testing.T) {
 func TestDuplicatePurchasesUpgradeHandAndDeployedCharacter(t *testing.T) {
 	r := setup(t)
 	p := r.Player("a")
+	// Inject a larger pool to isolate four-star merging from legal deck limits.
+	p.RemainingCopies[460] = 8
 	p.Coins = 100
-	p.Offers = []Card{{Token: 101, Kind: 0, Price: 2}, {Token: 102, Kind: 0, Price: 2}, {Token: 103, Kind: 0, Price: 2}, {Token: 104, Kind: 0, Price: 2}}
+	p.Offers = []Card{{Token: 101, Kind: 460, Price: 2}, {Token: 102, Kind: 460, Price: 2}, {Token: 103, Kind: 460, Price: 2}, {Token: 104, Kind: 460, Price: 2}}
 	action(t, r, "a", "buy", 101, 0)
 	action(t, r, "a", "buy", 102, 0)
 	if len(p.Hand) != 1 || p.Hand[0].Stars != 2 || p.Hand[0].Token != 101 || p.Hand[0].Paid != 4 {
@@ -500,22 +519,29 @@ func TestDuplicatePurchasesUpgradeHandAndDeployedCharacter(t *testing.T) {
 	action(t, r, "a", "deploy", 101, 2)
 	action(t, r, "a", "buy", 103, 0)
 	action(t, r, "a", "buy", 104, 0)
-	if len(p.Units) != 0 || len(p.Hand) != 1 || p.Hand[0].Stars != 4 || p.Hand[0].Paid != 8 || p.Coins != 92 {
+	if len(p.Units) != 0 || len(p.Hand) != 1 || p.Hand[0].Stars != 3 || p.Hand[0].Paid != 8 || p.Coins != 92 {
 		t.Fatal("field merge")
 	}
-	p.Offers = append(p.Offers, Card{Token: 105, Kind: 0, Price: 2})
+	for token := 105; token <= 108; token++ {
+		p.Offers = []Card{{Token: token, Kind: 460, Price: 2}}
+		action(t, r, "a", "buy", token, 0)
+	}
+	if len(p.Hand) != 1 || p.Hand[0].Stars != 4 {
+		t.Fatal("eight-copy merge")
+	}
+	p.Offers = append(p.Offers, Card{Token: 109, Kind: 460, Price: 2})
 	before := r.State.Revision
-	if r.Apply("a", Action{Type: "buy", Token: 105, Round: 1}, 1100) == nil || p.Coins != 92 || r.State.Revision != before {
+	if r.Apply("a", Action{Type: "buy", Token: 109, Round: 1}, 1100) == nil || p.Coins != 84 || r.State.Revision != before {
 		t.Fatal("four-star cap must not spend or mutate")
 	}
 	action(t, r, "a", "deploy", 101, 2)
 	action(t, r, "a", "return", 101, 0)
-	if p.Hand[0].Stars != 4 || p.Hand[0].Paid != 8 || p.Hand[0].Price != 2 {
+	if p.Hand[0].Stars != 4 || p.Hand[0].Paid != 16 || p.Hand[0].Price != 2 {
 		t.Fatal("return lost upgrade or price")
 	}
 	action(t, r, "a", "sell", 101, 0)
-	if p.Coins != 96 {
-		t.Fatal("refund half total purchase investment")
+	if p.Coins != 85 {
+		t.Fatal("sale must refund one coin")
 	}
 }
 func TestUpgradeAllowedWithFullHandAndField(t *testing.T) {
@@ -523,18 +549,18 @@ func TestUpgradeAllowedWithFullHandAndField(t *testing.T) {
 	p := r.Player("a")
 	p.Coins = 100
 	for i := 0; i < 10; i++ {
-		p.Hand = append(p.Hand, Card{Token: 100 + i, Kind: i, Stars: 1, Price: 2, Paid: 2})
+		p.Hand = append(p.Hand, Card{Token: 100 + i, Kind: 460 + i, Stars: 1, Price: 2, Paid: 2})
 	}
-	p.Offers = []Card{{Token: 201, Kind: 0, Price: 2}}
+	p.Offers = []Card{{Token: 201, Kind: 460, Price: 2}}
 	action(t, r, "a", "buy", 201, 0)
-	if len(p.Hand) != 10 || p.Hand[0].Stars != 2 {
+	if len(p.Hand) != 10 || p.Hand[cardIndex(p.Hand, 100)].Stars != 2 {
 		t.Fatal("full hand upgrade")
 	}
 	p.Hand = nil
 	for i := 0; i < 6; i++ {
-		p.Units = append(p.Units, Unit{Token: 300 + i, Kind: i, Stars: 1, Slot: i, PurchasePrice: 2, Veteran: true})
+		p.Units = append(p.Units, Unit{Token: 300 + i, Kind: 460 + i, Stars: 1, Slot: i, PurchasePrice: 2, Veteran: true})
 	}
-	p.Offers = []Card{{Token: 202, Kind: 0, Price: 2}}
+	p.Offers = []Card{{Token: 202, Kind: 460, Price: 2}}
 	action(t, r, "a", "buy", 202, 0)
 	if len(p.Units) != 5 || len(p.Hand) != 1 || p.Hand[0].Stars != 2 || !p.Hand[0].Veteran {
 		t.Fatal("full field veteran upgrade")
@@ -567,7 +593,7 @@ func TestReadyPlayerCanEditFieldUntilBattle(t *testing.T) {
 	p := r.Player("a")
 	p.Coins = 100
 	for i := 0; i < FieldLimit; i++ {
-		p.Hand = append(p.Hand, Card{Token: 100 + i, Kind: i, Price: 2, Stars: 1})
+		p.Hand = append(p.Hand, Card{Token: 100 + i, Kind: DefaultDeck().Cards[i].Kind, Price: 2, Stars: 1})
 	}
 	for slot := 0; slot < FieldLimit; slot++ {
 		action(t, r, "a", "deploy", 100+slot, slot)
@@ -591,7 +617,7 @@ func TestReadyPlayerCanEditFieldUntilBattle(t *testing.T) {
 	if len(p.Units) != 5 || !p.Ready {
 		t.Fatal("ready sale")
 	}
-	p.Offers = []Card{{Token: 200, Kind: 6, Price: 3}}
+	p.Offers = []Card{{Token: 200, Kind: DefaultDeck().Cards[6].Kind, Price: 3}}
 	action(t, r, "a", "buy", 200, 0)
 	action(t, r, "a", "deploy", 200, 5)
 	if len(p.Units) != 6 || !p.Ready {
@@ -616,14 +642,14 @@ func TestFieldUpgradeReturnsAutomaticallyAfterReadyButRejectsFullHand(t *testing
 	r := setup(t)
 	p := r.Player("a")
 	p.Coins = 100
-	p.Units = []Unit{{Token: 100, Kind: 0, Slot: 5, Stars: 1, Veteran: true, PurchasePrice: 2}}
-	p.Offers = []Card{{Token: 200, Kind: 0, Price: 2}}
+	p.Units = []Unit{{Token: 100, Kind: 460, Slot: 5, Stars: 1, Veteran: true, PurchasePrice: 2}}
+	p.Offers = []Card{{Token: 200, Kind: 460, Price: 2}}
 	for i := 0; i < 10; i++ {
-		p.Hand = append(p.Hand, Card{Token: 300 + i, Kind: i + 1, Stars: 1})
+		p.Hand = append(p.Hand, Card{Token: 300 + i, Kind: 461 + i, Stars: 1})
 	}
 	p.Ready = true
-	revision, remaining := r.State.Revision, p.RemainingCopies[0]
-	if r.Apply("a", Action{Type: "buy", Token: 200, Round: 1}, 1100) == nil || p.Coins != 100 || r.State.Revision != revision || p.RemainingCopies[0] != remaining || len(p.Units) != 1 {
+	revision, remaining := r.State.Revision, p.RemainingCopies[460]
+	if r.Apply("a", Action{Type: "buy", Token: 200, Round: 1}, 1100) == nil || p.Coins != 100 || r.State.Revision != revision || p.RemainingCopies[460] != remaining || len(p.Units) != 1 {
 		t.Fatal("full hand upgrade must not mutate")
 	}
 	p.Hand = p.Hand[:9]

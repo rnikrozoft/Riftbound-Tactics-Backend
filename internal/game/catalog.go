@@ -25,6 +25,9 @@ type CharacterStats struct {
 	Armor     int `json:"armor"`
 }
 type CharacterDefinition struct {
+	SupportValue       int              `json:"support_value,omitempty"`
+	SupportEffect      string           `json:"support_effect,omitempty"`
+	EnemyAnimationPath string           `json:"enemy_animation_path,omitempty"`
 	Kind               int              `json:"kind"`
 	ID                 string           `json:"character_id"`
 	Name               string           `json:"name"`
@@ -59,6 +62,7 @@ type CharacterDefinition struct {
 	Combat             *CombatRules     `json:"combat,omitempty"`
 }
 type CharacterCatalog struct {
+	RosterVersion int                   `json:"roster_version,omitempty"`
 	SchemaVersion int                   `json:"schema_version"`
 	GroupNames    []string              `json:"group_names,omitempty"`
 	Characters    []CharacterDefinition `json:"characters"`
@@ -129,6 +133,7 @@ func ValidateCharacterCatalog(c CharacterCatalog) error {
 	}
 	ids, characterNames := map[string]bool{}, map[string]bool{}
 	counts := map[[2]int]int{}
+	sceneGroups := map[string]int{}
 	for kind, d := range c.Characters {
 		if d.Kind != kind || !regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`).MatchString(d.ID) || ids[d.ID] || strings.TrimSpace(d.Name) == "" || characterNames[d.Name] {
 			return fmt.Errorf("invalid or duplicate character identity at kind %d", kind)
@@ -164,14 +169,49 @@ func ValidateCharacterCatalog(c CharacterCatalog) error {
 			}
 		}
 		if d.Enabled {
+			if previous, ok := sceneGroups[d.ScenePath]; ok && (c.RosterVersion >= 2 || previous != d.Group) {
+				return fmt.Errorf("groups %d and %d share a character asset", previous, d.Group)
+			}
+			sceneGroups[d.ScenePath] = d.Group
 			counts[[2]int{d.Group, d.Cost}]++
 		}
 	}
 	for group := range names {
+		if group == NeutralGroup {
+			continue
+		}
+		active := false
+		for _, d := range c.Characters {
+			if d.Enabled && d.Group == group {
+				active = true
+				break
+			}
+		}
+		if !active {
+			continue
+		} // Retired groups retain IDs for saved collections.
 		for cost := 2; cost <= 6; cost++ {
 			if counts[[2]int{group, cost}] < 2 {
 				return fmt.Errorf("group %d cost %d requires at least two enabled characters", group, cost)
 			}
+		}
+	}
+	if c.RosterVersion >= 2 {
+		if len(sceneGroups) < 40 || (c.RosterVersion < 3 && len(sceneGroups) != 40) {
+			return fmt.Errorf("roster requires 40 unique character assets")
+		}
+		groups := map[int]bool{}
+		for key, count := range counts {
+			if key[0] == NeutralGroup {
+				continue
+			}
+			if count < 2 || (c.RosterVersion < 3 && count != 2) {
+				return fmt.Errorf("each group requires two characters per cost")
+			}
+			groups[key[0]] = true
+		}
+		if len(groups) != 4 {
+			return fmt.Errorf("roster requires four groups")
 		}
 	}
 	return nil
@@ -489,3 +529,42 @@ func LoadCharacterWorkbook(path string) (CharacterCatalog, error) {
 	}
 	return c, nil
 }
+
+// Neutral support is mandatory and separate from the thirty hero-card slots.
+func SupportKind() int {
+	for _, c := range catalog.Characters {
+		if c.ID == "healing_totem" && c.Enabled {
+			return c.Kind
+		}
+	}
+	return -1
+}
+func IsSupport(kind int) bool {
+	return kind >= 0 && kind < CardKinds && (Character(kind).SupportEffect != "" || Character(kind).ID == "healing_totem")
+}
+func validDeployment(kind, slot int) bool {
+	if IsSupport(kind) {
+		return slot >= FieldLimit && slot < FieldLimit+5
+	}
+	return slot >= 0 && slot < FieldLimit
+}
+
+func SupportKinds() []int {
+	var out []int
+	for _, c := range catalog.Characters {
+		if c.Enabled && IsSupport(c.Kind) {
+			out = append(out, c.Kind)
+		}
+	}
+	return out
+}
+func supportEffect(kind int) string {
+	if !IsSupport(kind) {
+		return ""
+	}
+	if Character(kind).ID == "healing_totem" {
+		return "heal"
+	}
+	return Character(kind).SupportEffect
+}
+func IsTrap(kind int) bool { return IsSupport(kind) && Character(kind).Role == "trap" }

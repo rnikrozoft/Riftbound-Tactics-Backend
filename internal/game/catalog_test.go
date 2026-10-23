@@ -143,7 +143,7 @@ func TestWorkbookCanAddFutureCharacter(t *testing.T) {
 			row = regexp.MustCompile(`r="([A-Z]+)65"`).ReplaceAllString(row, `r="${1}66"`)
 			row = setNumericCell(row, "A66", "60")
 			row = setTextCell(row, "B66", "character_060")
-			row = setTextCell(row, "C66", "Future Neutral Hero")
+			row = setTextCell(row, "C66", "Future Knight Hero")
 			return strings.Replace(s, "</sheetData>", row+"</sheetData>", 1)
 		}
 		if name == "xl/worksheets/sheet2.xml" {
@@ -164,14 +164,20 @@ func TestWorkbookCanAddFutureCharacter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Characters) != 61 || c.Characters[60].Name != "Future Neutral Hero" {
+	if len(c.Characters) != 61 || c.Characters[60].Name != "Future Knight Hero" {
 		t.Fatal("new character missing")
 	}
 	old := Catalog()
 	defer UseCatalog(old)
+	c.Characters[60].Group = 0
 	UseCatalog(c)
 	deck := DefaultDeck()
-	deck.Cards[len(deck.Cards)-1] = DeckCard{Kind: 60, Copies: 4}
+	for i, card := range deck.Cards {
+		if CardGroup(card.Kind) == 0 && CardCost(card.Kind) == c.Characters[60].Cost {
+			deck.Cards[i] = DeckCard{Kind: 60, Copies: 4}
+			break
+		}
+	}
 	if err := ValidateDeck(deck); err != nil {
 		t.Fatal("new character cannot be added to deck:", err)
 	}

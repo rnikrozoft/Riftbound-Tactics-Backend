@@ -86,7 +86,11 @@ func NewLeague(seats []Seat, seed int64) (*League, error) {
 		p := newPlayer(s.ID, "A")
 		p.Connected = s.Bot
 		p.DeckName = s.Deck.Name
+		p.CardBackID = NormalizeCardBackID(s.Deck.CardBackID)
 		p.RemainingCopies = make([]int, CardKinds)
+		for _, support := range SupportKinds() {
+			p.RemainingCopies[support] = 1
+		}
 		for _, c := range s.Deck.Cards {
 			p.RemainingCopies[c.Kind] = c.Copies
 		}
@@ -281,21 +285,23 @@ func (l *League) PlayBots(now int64) {
 			return l.Apply(p.UserID, Action{Type: t, Token: token, Slot: slot, Round: l.Round}, now) == nil
 		}
 		deploy := func() {
-			for len(p.Hand) > 0 && len(p.Units) < FieldLimit {
-				slot := 0
-				for ; slot < FieldLimit; slot++ {
+			for _, card := range append([]Card{}, p.Hand...) {
+				start, end := 0, FieldLimit
+				if IsSupport(card.Kind) {
+					start, end = FieldLimit, FieldLimit+5
+				}
+				for slot := start; slot < end; slot++ {
 					used := false
-					for _, u := range p.Units {
-						if u.Slot == slot {
+					for _, unit := range p.Units {
+						if unit.Slot == slot {
 							used = true
+							break
 						}
 					}
 					if !used {
+						apply("deploy", card.Token, slot)
 						break
 					}
-				}
-				if !apply("deploy", p.Hand[0].Token, slot) {
-					break
 				}
 			}
 		}
@@ -309,7 +315,13 @@ func (l *League) PlayBots(now int64) {
 				if c.Price > p.Coins {
 					continue
 				}
-				if len(p.Units) < FieldLimit {
+				heroCount := 0
+				for _, unit := range p.Units {
+					if !IsSupport(unit.Kind) {
+						heroCount++
+					}
+				}
+				if heroCount < FieldLimit || IsSupport(c.Kind) {
 					token = c.Token
 					break
 				}

@@ -11,16 +11,17 @@ type DeckCard struct {
 	Copies int `json:"copies"`
 }
 type Deck struct {
-	Name   string     `json:"name"`
-	Heroes []int      `json:"heroes"`
-	Cards  []DeckCard `json:"cards"`
+	CardBackID string     `json:"card_back_id,omitempty"`
+	Name       string     `json:"name"`
+	Heroes     []int      `json:"heroes"`
+	Cards      []DeckCard `json:"cards"`
 }
 
 func CardGroup(kind int) int { return Character(kind).Group }
-func DefaultDeck() Deck      { return deckForGroups("Starter", []int{0, 1, 2}) }
+func DefaultDeck() Deck      { return deckForGroups("Starter", HeroGroups()[:3]) }
 func deckForGroups(name string, heroes []int) Deck {
 	d := Deck{Name: name, Heroes: heroes}
-	groups := append(append([]int{}, heroes...), NeutralGroup)
+	groups := heroes
 	for _, group := range groups {
 		for cost := 2; cost <= 6; cost++ {
 			n := 0
@@ -38,13 +39,16 @@ func deckForGroups(name string, heroes []int) Deck {
 	return d
 }
 func ValidateDeck(d Deck) error {
+	if _, ok := CardBack(d.CardBackID); !ok {
+		return errors.New("unknown card back")
+	}
 	if strings.TrimSpace(d.Name) == "" || utf8.RuneCountInString(d.Name) > 40 {
 		return errors.New("deck name must contain 1-40 characters")
 	}
-	if len(d.Heroes) != 3 || len(d.Cards) != 40 {
-		return errors.New("deck requires three heroes and forty distinct card slots")
+	if len(d.Heroes) != 3 || len(d.Cards) != 30 {
+		return errors.New("deck requires three heroes and thirty distinct card slots")
 	}
-	groups := map[int]bool{NeutralGroup: true}
+	groups := map[int]bool{}
 	for _, g := range d.Heroes {
 		if !IsHeroGroup(g) || groups[g] {
 			return errors.New("choose three different heroes")
@@ -78,7 +82,11 @@ func (r *Room) SetDeck(id string, d Deck) error {
 		return errors.New("deck can only be selected before preparation")
 	}
 	p.DeckName = d.Name
+	p.CardBackID = NormalizeCardBackID(d.CardBackID)
 	p.RemainingCopies = make([]int, CardKinds)
+	for _, support := range SupportKinds() {
+		p.RemainingCopies[support] = 1
+	}
 	for _, c := range d.Cards {
 		p.RemainingCopies[c.Kind] = c.Copies
 	}

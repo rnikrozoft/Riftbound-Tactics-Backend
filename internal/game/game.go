@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 )
 
 const ShopLimit = 5
@@ -74,6 +75,7 @@ type Unit struct {
 	PurchasePrice int  `json:"purchase_price"`
 }
 type Player struct {
+	CardBackID        string       `json:"card_back_id"`
 	DeckName          string       `json:"deck_name"`
 	HP                int          `json:"hp"`
 	LastDamage        int          `json:"last_damage"`
@@ -157,8 +159,12 @@ func New(code, creator string, seed int64) *Room {
 func newPlayer(id, team string) *Player {
 	p := &Player{UserID: id, Team: team, HP: MaxPlayerHP, ShopLevel: 2, UpgradeCost: 2, Offers: []Card{}, Hand: []Card{}, Units: []Unit{}}
 	p.RemainingCopies = make([]int, CardKinds)
+	for _, support := range SupportKinds() {
+		p.RemainingCopies[support] = 1
+	}
 	deck := DefaultDeck()
 	p.DeckName = deck.Name
+	p.CardBackID = NormalizeCardBackID(deck.CardBackID)
 	for _, card := range deck.Cards {
 		p.RemainingCopies[card.Kind] = card.Copies
 	}
@@ -246,9 +252,21 @@ func (r *Room) rollShop(p *Player) {
 }
 func (r *Room) fillShop(p *Player) { r.fillShopExcept(p, nil) }
 func (r *Room) fillShopExcept(p *Player, excluded map[int]bool) {
+	preserved := len(p.Offers)
 	candidates := []int{}
+	support := SupportKind()
+	reserve := support >= 0 && p.RemainingCopies[support] > 0
+	for _, card := range p.Offers {
+		if card.Kind == support {
+			reserve = false
+		}
+	}
+	limit := ShopSlots(p.ShopLevel)
+	if reserve {
+		limit--
+	}
 	for kind, remaining := range p.RemainingCopies {
-		if remaining <= 0 || !Character(kind).Enabled || CardCost(kind) > p.ShopLevel {
+		if kind == support || remaining <= 0 || !Character(kind).Enabled || CardCost(kind) > p.ShopLevel {
 			continue
 		}
 		present := false
@@ -271,12 +289,30 @@ func (r *Room) fillShopExcept(p *Player, excluded map[int]bool) {
 	if len(preferred) >= ShopSlots(p.ShopLevel)-len(p.Offers) {
 		candidates = preferred
 	}
-	for len(p.Offers) < ShopSlots(p.ShopLevel) && len(candidates) > 0 {
+	for len(p.Offers) < limit && len(candidates) > 0 {
 		index := r.rng.Intn(len(candidates))
 		kind := candidates[index]
 		candidates = append(candidates[:index], candidates[index+1:]...)
+		if IsSupport(kind) {
+			already := false
+			for _, offer := range p.Offers {
+				if IsSupport(offer.Kind) && offer.Kind != support {
+					already = true
+				}
+			}
+			if already {
+				continue
+			}
+		}
 		r.serial++
 		p.Offers = append(p.Offers, Card{Token: r.serial, Kind: kind, Price: CardCost(kind)})
+	}
+	if reserve && len(p.Offers) < ShopSlots(p.ShopLevel) {
+		r.serial++
+		p.Offers = append(p.Offers, Card{Token: r.serial, Kind: support, Price: CardCost(support)})
+	}
+	if preserved == 0 {
+		sort.SliceStable(p.Offers, func(i, j int) bool { return !IsSupport(p.Offers[i].Kind) && IsSupport(p.Offers[j].Kind) })
 	}
 }
 func price(card Card) int {
@@ -332,28 +368,40 @@ func (r *Room) Apply(id string, a Action, now int64) error {
 			return errors.New("offer unavailable")
 		}
 		card := p.Offers[i]
-		mergeUnit, mergeHand := -1, -1
-		for j, u := range p.Units {
-			if u.Kind == card.Kind {
-				if starCount(u.Stars) >= 4 {
-					return errors.New("character already has four stars")
-				}
-				mergeUnit = j
-				break
-			}
-		}
-		if mergeUnit < 0 {
-			for j, c := range p.Hand {
-				if c.Kind == card.Kind {
-					if starCount(c.Stars) >= 4 {
-						return errors.New("character already has four stars")
-					}
-					mergeHand = j
+		hand, units := append([]Card{}, p.Hand...), append([]Unit{}, p.Units...)
+		pending := card
+		pending.Stars, pending.Price, pending.Paid = 1, price(card), price(card)
+		for !IsSupport(pending.Kind) && pending.Stars < 4 {
+			found := false
+			for j, c := range hand {
+				if c.Kind == pending.Kind && starCount(c.Stars) == pending.Stars {
+					pending.Token = c.Token
+					pending.Paid += investment(c)
+					pending.Veteran = pending.Veteran || c.Veteran
+					hand = append(hand[:j], hand[j+1:]...)
+					found = true
 					break
 				}
 			}
+			if !found {
+				for j, u := range units {
+					if u.Kind == pending.Kind && starCount(u.Stars) == pending.Stars {
+						pending.Token = u.Token
+						pending.Paid += u.PurchasePrice
+						pending.Veteran = pending.Veteran || u.Veteran
+						units = append(units[:j], units[j+1:]...)
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				break
+			}
+			pending.Stars++
 		}
-		if mergeHand < 0 && len(p.Hand) >= HandLimit {
+		hand = append(hand, pending)
+		if len(hand) > HandLimit {
 			return errors.New("hand full")
 		}
 		cost := price(card)
@@ -365,24 +413,11 @@ func (r *Room) Apply(id string, a Action, now int64) error {
 		}
 		p.Coins -= cost
 		p.RemainingCopies[card.Kind]--
-		if mergeUnit >= 0 {
-			u := p.Units[mergeUnit]
-			p.Hand = append(p.Hand, Card{Token: u.Token, Kind: u.Kind, Stars: starCount(u.Stars) + 1, Price: cost, Paid: u.PurchasePrice + cost, Veteran: u.Veteran})
-			p.Units = append(p.Units[:mergeUnit], p.Units[mergeUnit+1:]...)
-		} else if mergeHand >= 0 {
-			c := &p.Hand[mergeHand]
-			c.Paid = investment(*c) + cost
-			c.Stars = starCount(c.Stars) + 1
-		} else {
-			card.Price = cost
-			card.Paid = cost
-			card.Stars = 1
-			p.Hand = append(p.Hand, card)
-		}
+		p.Hand, p.Units = hand, units
 		p.Offers = append(p.Offers[:i], p.Offers[i+1:]...)
 
 	case "deploy":
-		if ci < 0 || a.Slot < 0 || a.Slot >= FieldLimit || len(p.Units) >= FieldLimit {
+		if ci < 0 || !validDeployment(p.Hand[ci].Kind, a.Slot) {
 			return errors.New("invalid deployment")
 		}
 		for _, u := range p.Units {
@@ -394,12 +429,15 @@ func (r *Room) Apply(id string, a Action, now int64) error {
 		p.Hand = append(p.Hand[:ci], p.Hand[ci+1:]...)
 		p.Units = append(p.Units, Unit{Veteran: card.Veteran, Stars: starCount(card.Stars), Token: card.Token, Kind: card.Kind, Slot: a.Slot, PurchasePrice: investment(card)})
 	case "move":
-		if ui < 0 || a.Slot < 0 || a.Slot >= FieldLimit {
+		if ui < 0 || !validDeployment(p.Units[ui].Kind, a.Slot) {
 			return errors.New("invalid move")
 		}
 		old := p.Units[ui].Slot
 		for i := range p.Units {
 			if i != ui && p.Units[i].Slot == a.Slot {
+				if IsSupport(p.Units[i].Kind) != IsSupport(p.Units[ui].Kind) {
+					return errors.New("incompatible slot")
+				}
 				p.Units[i].Slot = old
 			}
 		}
@@ -413,10 +451,10 @@ func (r *Room) Apply(id string, a Action, now int64) error {
 		p.Hand = append(p.Hand, Card{Veteran: unit.Veteran, Stars: starCount(unit.Stars), Paid: unit.PurchasePrice, Token: unit.Token, Kind: unit.Kind, Price: CardCost(unit.Kind)})
 	case "sell":
 		if ci >= 0 {
-			p.Coins += investment(p.Hand[ci]) / 2
+			p.Coins++
 			p.Hand = append(p.Hand[:ci], p.Hand[ci+1:]...)
 		} else if ui >= 0 {
-			p.Coins += p.Units[ui].PurchasePrice / 2
+			p.Coins++
 			p.Units = append(p.Units[:ui], p.Units[ui+1:]...)
 		} else {
 			return errors.New("card not owned")
@@ -482,10 +520,21 @@ func (r *Room) startLegacy(now int64) *Plan {
 			hp[index] = StatsFor(u.Kind, stars).HP
 		}
 	}
-	side := 0
+	side := r.openingSide(plan.Units)
+	cursors := [2]int{}
 	nextEventMS := plan.StartMS
 	for len(alive[0]) > 0 && len(alive[1]) > 0 {
-		attacker := alive[side][r.rng.Intn(len(alive[side]))]
+		attacker := -1
+		for offset := 0; offset < 6 && attacker < 0; offset++ {
+			rank := (cursors[side] + offset) % 6
+			for _, index := range alive[side] {
+				if actionSlotRank(side, plan.Units[index].Slot) == rank {
+					attacker = index
+					cursors[side] = (rank + 1) % 6
+					break
+				}
+			}
+		}
 		targetIndex := r.rng.Intn(len(alive[1-side]))
 		target := alive[1-side][targetIndex]
 		stats := StatsFor(plan.Units[attacker].Kind, plan.Units[attacker].Stars)
@@ -532,6 +581,16 @@ func (r *Room) Finish(now int64) bool {
 			p.LastDamage = 0
 		}
 		plan := r.State.Battle
+		used := consumedSupport(plan)
+		for _, player := range r.State.Players {
+			kept := player.Units[:0]
+			for _, unit := range player.Units {
+				if !used[fmt.Sprintf("%s:%d", player.Team, unit.Token)] {
+					kept = append(kept, unit)
+				}
+			}
+			player.Units = kept
+		}
 		if plan.Winner != "DRAW" {
 			for _, p := range r.State.Players {
 				if p.Team == plan.Winner {

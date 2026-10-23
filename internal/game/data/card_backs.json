@@ -1,0 +1,202 @@
+[
+  {
+    "id": "card_back_00",
+    "name": "Ember Crest",
+    "price": 0,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 14,
+    "y": 12,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_01",
+    "name": "Azure Orb",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 120,
+    "y": 12,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_02",
+    "name": "Moon Sentinel",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 226,
+    "y": 12,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_03",
+    "name": "Verdant Staff",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 332,
+    "y": 12,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_04",
+    "name": "Frost Crystal",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 14,
+    "y": 146,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_05",
+    "name": "Forest Sigil",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 120,
+    "y": 146,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_06",
+    "name": "Golden Crown",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 226,
+    "y": 146,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_07",
+    "name": "Skull Banner",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 332,
+    "y": 146,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_08",
+    "name": "Royal Shield",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 14,
+    "y": 280,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_09",
+    "name": "Storm Scepter",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 120,
+    "y": 280,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_10",
+    "name": "Phoenix Star",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 226,
+    "y": 280,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_11",
+    "name": "Sacred Sword",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 332,
+    "y": 280,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_12",
+    "name": "Amber Diamond",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 14,
+    "y": 413,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_13",
+    "name": "Sapphire Diamond",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 119,
+    "y": 413,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_14",
+    "name": "Silver Diamond",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 224,
+    "y": 413,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_15",
+    "name": "Prismatic Diamond",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 325,
+    "y": 413,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_16",
+    "name": "Crimson Rune",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 14,
+    "y": 552,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_17",
+    "name": "Emerald Rune",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 119,
+    "y": 552,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_18",
+    "name": "Ivory Rune",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 224,
+    "y": 552,
+    "width": 96,
+    "height": 128
+  },
+  {
+    "id": "card_back_19",
+    "name": "Sunburst",
+    "price": 100,
+    "texture_path": "res://assets/ui/cards/card_backs.png",
+    "x": 330,
+    "y": 552,
+    "width": 96,
+    "height": 128
+  }
+]

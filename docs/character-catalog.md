@@ -4,11 +4,19 @@ The runtime source is `data/characters.json`. Nakama loads it at startup and rej
 
 ## Character groups and decks
 
-`group_names` supplies names for groups 0–7: Knight, Ranger, Mage, Guardian, Neutral, Orc, Demon and Blood Monster. Group 4 is the separate Neutral collection; it cannot be selected as a character. Each selectable character has two card kinds at each cost 2–6. A deck selects three different characters, their thirty kinds, and ten Neutral kinds (two per cost), with one to four copies per kind.
+Group names and numeric IDs remain stable for saved-data compatibility. Ranger, Mage, Guardian and Neutral (groups 1–4) are retired and all their definitions are disabled. Shop, collection, hero selection and combat simulator exclude them. The remaining **41 active character groups use 41 distinct scene/texture sets**. JSON validation rejects two active groups that share a character scene.
 
-The original Orc Raider (kind 60), Demon (61) and Blood Monster (62) keep their kinds but now belong to groups 5, 6 and 7 respectively. Each new character has ten starting card kinds using its existing artwork and basic attacks. The additional Raider/Guard cards are starter data, without new special mechanics. Neutral retains its original twenty options.
+A deck selects three different active characters and **30 distinct card kinds**: two cards at each cost 2–6 for each selected group, with one to four copies per kind. Neutral slots are removed. The free starter groups are **Knight, Orc and Demon**.
 
-The client repairs older saved decks that used kinds 60–62 as Neutral by choosing unused Neutral cards of the same cost, preserving names, selected characters and copy counts. It keeps a backup at `user://decks-before-character-groups.json`. Decks that select the new characters can include those original kinds directly.
+Existing saved decks keep their IDs, names, selected status and copy counts. Bootstrap replaces retired hero slots with unused active groups, removes Neutral and old unselected support cards, and grants ownership of replacement cards without a wallet charge. Deleted deck lists remain empty. Offline deck migration preserves a backup at `user://decks-before-character-groups.json`. Retired character IDs remain reserved; unrelated characters are never renumbered.
+
+The original Orc Raider (kind 60), Demon (61) and Blood Monster (62) retain their kinds and groups 5, 6 and 7. They remain available in decks selecting their respective characters.
+
+## Card backs
+
+Twenty existing designs are defined in `internal/game/data/card_backs.json`. `card_back_00` is free; the other nineteen cost 100 wallet coins each. `card_back_purchase` uses account-bound ownership, server prices, atomic wallet/profile/receipt updates, version checks and retry-safe purchase IDs. Free character access does not unlock paid card backs.
+
+Saved and runtime decks carry one `card_back_id`; an omitted value selects the free default. Ownership is enforced for online deck save, rooms and matchmaking. Player snapshots include the selected back for opponent hands, reconnects and replays. Buying a back does not select it automatically or change existing decks. The client selects it in **Decks → Edit deck → Choose card back**, then saves the deck.
 
 ## Update definitions
 

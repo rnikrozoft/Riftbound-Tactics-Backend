@@ -84,6 +84,8 @@ func configForTest(t *testing.T) {
 	t.Helper()
 	old, v := activeConfig, activeConfigVersion
 	config := defaultConfiguration(game.Catalog())
+	config.Economy.FreeCharacterCards = false
+	config.Economy.FreeCardBacks = false
 	activeConfig = &config
 	activeConfigVersion = configurationHash(config)
 	t.Cleanup(func() { activeConfig = old; activeConfigVersion = v })
@@ -94,7 +96,7 @@ func purchasePayload(id, request string) string {
 }
 func unownedCharacter(p playerData) string {
 	for _, c := range game.Catalog().Characters {
-		if !ownsCharacter(p, c.ID) {
+		if c.Enabled && c.Group != game.NeutralGroup && !ownsCharacter(p, c.ID) {
 			return c.ID
 		}
 	}
@@ -108,7 +110,7 @@ func TestCollectionPurchaseAtomicAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.Owned) != 40 || len(p.Decks) != 1 || v == "" {
+	if len(p.Owned) != 30 || len(p.Decks) != 1 || v == "" {
 		t.Fatal("starter collection missing")
 	}
 	id := unownedCharacter(p)
@@ -308,4 +310,111 @@ func TestDeleteLastDeckPersistsAndPreservesCollection(t *testing.T) {
 	if err != nil || len(p.Decks) != 0 || p.SelectedID != "" || !reflect.DeepEqual(p.Owned, owned) {
 		t.Fatalf("deleted deck regenerated or collection changed: %v", err)
 	}
+}
+
+func TestStarterThreeGroupsAndGroupShop(t *testing.T) {
+	configForTest(t)
+	if activeConfig.Economy.AllUnlocked {
+		t.Fatal("new servers must enforce ownership")
+	}
+	nk := inventoryFake()
+	ctx := queueContext("group-shop")
+	p, _, err := ensurePlayer(ctx, nk, "group-shop", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range p.Owned {
+		kind, _ := characterKind(id)
+		g := game.CardGroup(kind)
+		if g != 45 && g != 46 && g != 47 {
+			t.Fatal("starter granted a paid character")
+		}
+	}
+	payload := func(group int, request string) string {
+		b, _ := json.Marshal(map[string]interface{}{"group": group, "request_id": request, "config_version": activeConfigVersion, "price": 0, "user_id": "someone-else"})
+		return string(b)
+	}
+	if _, err := characterGroupPurchase(ctx, nil, nil, nk, payload(48, "group-buy")); err == nil {
+		t.Fatal("unfunded group purchase succeeded")
+	}
+	after, _, _ := readPlayer(ctx, nk, "group-shop")
+	if len(after.Owned) != 30 || nk.wallets["group-shop"] != 0 {
+		t.Fatal("failed group purchase partially granted ownership")
+	}
+	var first string
+	price := int64(0)
+	for _, c := range activeConfig.Catalog.Characters {
+		if c.Enabled && c.Group == 48 {
+			price += activeConfig.Economy.Prices[c.ID]
+			if first == "" {
+				first = c.ID
+			}
+		}
+	}
+	nk.wallets["group-shop"] = price
+	if _, err := characterPurchase(ctx, nil, nil, nk, purchasePayload(first, "individual")); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := characterGroupPurchase(ctx, nil, nil, nk, payload(48, "group-buy"))
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, v, _ := readPlayer(ctx, nk, "group-shop")
+	if nk.wallets["group-shop"] != 0 || len(p.Owned) != 41 {
+		t.Fatal("group charged twice or charged already owned card")
+	}
+	if _, err := characterGroupPurchase(ctx, nil, nil, nk, payload(5, "group-buy")); err == nil {
+		t.Fatal("receipt ID reused for another group")
+	}
+	if _, err := characterPurchase(ctx, nil, nil, nk, purchasePayload(p.Owned[0], "group-buy")); err == nil {
+		t.Fatal("group receipt reused for individual purchase")
+	}
+	if _, err := characterGroupPurchase(ctx, nil, nil, nk, `{"request_id":"missing-group"}`); err == nil {
+		t.Fatal("missing group accepted")
+	}
+	d := game.Deck{Name: "Paid character deck", Heroes: []int{48, 46, 47}}
+	for _, group := range []int{48, 46, 47} {
+		for cost := 2; cost <= 6; cost++ {
+			count := 0
+			for _, c := range activeConfig.Catalog.Characters {
+				if c.Enabled && c.Group == group && c.Cost == cost && count < 2 {
+					d.Cards = append(d.Cards, game.DeckCard{Kind: c.Kind, Copies: c.MaxCopies})
+					count++
+				}
+			}
+		}
+	}
+	if err := validateOwnedDeck(ctx, nk, "group-shop", d); err != nil {
+		t.Fatal("purchased group not usable in match:", err)
+	}
+	// Re-login/initialization does not overwrite paid collection or saved decks.
+	again, version, _ := ensurePlayer(ctx, nk, "group-shop", nil, "")
+	if len(again.Owned) != 41 || version != v {
+		t.Fatal("bootstrap overwrote purchased collection")
+	}
+}
+
+func (n *inventoryNakama) StorageList(ctx context.Context, callerID, userID, collection string, limit int, cursor string) ([]*api.StorageObject, string, error) {
+	n.Lock()
+	defer n.Unlock()
+	var result []*api.StorageObject
+	for _, o := range n.objects {
+		if o.Collection == collection && o.UserId == userID {
+			result = append(result, o)
+		}
+	}
+	return result, "", nil
 }

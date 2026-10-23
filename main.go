@@ -35,6 +35,9 @@ func InitModule(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runti
 	if err := initializePlayerStorage(ctx, nk, initializer, catalog); err != nil {
 		return err
 	}
+	if err := initializeLocalization(ctx, nk, initializer); err != nil {
+		return err
+	}
 	logger.Info("Loaded %d character definitions from %s", len(catalog.Characters), path)
 	if err := initializer.RegisterRpc("character_catalog", func(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
 		data, err := json.Marshal(game.Catalog())
